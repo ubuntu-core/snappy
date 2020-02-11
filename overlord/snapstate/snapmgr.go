@@ -462,6 +462,7 @@ func Manager(st *state.State, runner *state.TaskRunner) (*SnapManager, error) {
 // StartUp implements StateStarterUp.Startup.
 func (m *SnapManager) StartUp() error {
 	writeSnapReadme()
+	// TODO: writeSnapManpageRreadme
 
 	m.state.Lock()
 	defer m.state.Unlock()
