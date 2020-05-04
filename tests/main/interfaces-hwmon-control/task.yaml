@@ -1,0 +1,45 @@
+summary: |
+    The hwmon-control interface allows a snap to control hardware and platform devices.
+
+    Ensure that the hwmon-control interface and usage of the channel key to narrow the scope
+    of the interfae works.
+
+    A snap which defines the hwmon-control plug must be shown in the interfaces list.
+    The plug must not be connected on install and, as usual, must be able to be
+    reconnected.
+
+    A snap specifying no channel will be granted all possible channels supported by snapd.
+
+    A snap specifying one or more channels on a plug will have narrowed scope for access
+    and only be able to control hwmon devices of the requested classes.
+
+prepare: |
+    #shellcheck source=tests/lib/snaps.sh
+    . "$TESTSLIB/snaps.sh"
+
+    echo "Given a snap declaring a plug on the hwmon-control interface is installed"
+    install_local hwmon-control-consumer
+
+execute: |
+    echo "The interface is not connected by default"
+    snap interfaces -i hwmon-control | MATCH '^- +hwmon-control-consumer:hwmon-control'
+
+    echo "When the plug is connected"
+    snap connect hwmon-control-consumer:hwmon-all snapd:hwmon-control
+
+    echo "Then the snap is able to update hardware state via sysfs"
+    hwmon-control-consumer.consumer-all
+
+    if [ "$(snap debug confinement)" = partial ] ; then
+        exit 0
+    fi
+
+    echo "When the plug is disconnected"
+    snap disconnect hwmon-control-consumer:hwmon-control
+
+    echo "Then the snap is not able to write hardware state"
+    if hwmon-control-consumer.consumer 2>hw.error; then
+        echo "Expected permission error updating hardware state with disconnected plug"
+        exit 1
+    fi
+    hw.error|MATCH ".* Permission denied"

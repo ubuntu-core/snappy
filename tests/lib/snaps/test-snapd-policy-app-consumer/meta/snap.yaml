@@ -149,6 +149,9 @@ apps:
   gsettings:
     command: bin/run
     plugs: [ gsettings ]
+  hardware-control:
+    command: bin/run
+    plugs: [ hardware-control ]
   hardware-observe:
     command: bin/run
     plugs: [ hardware-observe ]
