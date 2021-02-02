@@ -268,7 +268,11 @@ func (aaa *appArmorAssess) doAssess() (level LevelType, summary string) {
 	}
 
 	// If we got here then all features are available and supported.
-	return Full, "apparmor is enabled and all features are available"
+	note := ""
+	if strutil.SortedListContains(parserFeatures, "snapd-internal") {
+		note = " (using snapd provided apparmor_parser)"
+	}
+	return Full, "apparmor is enabled and all features are available" + note
 }
 
 type appArmorProbe struct {
@@ -324,6 +328,9 @@ func probeParserFeatures() ([]string, error) {
 	features := make([]string, 0, 1)
 	if tryAppArmorParserFeature(parser, "change_profile unsafe /**,") {
 		features = append(features, "unsafe")
+	}
+	if internal {
+		features = append(features, "snapd-internal")
 	}
 	sort.Strings(features)
 	return features, nil
