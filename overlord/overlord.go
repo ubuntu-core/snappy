@@ -41,6 +41,7 @@ import (
 	"github.com/snapcore/snapd/overlord/configstate"
 	"github.com/snapcore/snapd/overlord/configstate/proxyconf"
 	"github.com/snapcore/snapd/overlord/devicestate"
+	"github.com/snapcore/snapd/overlord/exportstate"
 	"github.com/snapcore/snapd/overlord/healthstate"
 	"github.com/snapcore/snapd/overlord/hookstate"
 	"github.com/snapcore/snapd/overlord/ifacestate"
@@ -90,10 +91,9 @@ type Overlord struct {
 	// restarts
 	restartBehavior RestartBehavior
 	// managers
-	inited     bool
-	startedUp  bool
 	runner     *state.TaskRunner
 	snapMgr    *snapstate.SnapManager
+	exportMgr  *exportstate.ExportManager
 	serviceMgr *servicestate.ServiceManager
 	assertMgr  *assertstate.AssertManager
 	ifaceMgr   *ifacestate.InterfaceManager
@@ -101,6 +101,10 @@ type Overlord struct {
 	deviceMgr  *devicestate.DeviceManager
 	cmdMgr     *cmdstate.CommandManager
 	shotMgr    *snapshotstate.SnapshotManager
+
+	inited    bool
+	startedUp bool
+
 	// proxyConf mediates the http proxy config
 	proxyConf func(req *http.Request) (*url.URL, error)
 }
@@ -158,6 +162,8 @@ func New(restartBehavior RestartBehavior) (*Overlord, error) {
 		return nil, err
 	}
 	o.addManager(snapMgr)
+
+	// TODO: instantiate and add the export manager.
 
 	serviceMgr := servicestate.Manager(s, o.runner)
 	o.addManager(serviceMgr)
@@ -221,6 +227,8 @@ func (o *Overlord) addManager(mgr StateManager) {
 		o.cmdMgr = x
 	case *snapshotstate.SnapshotManager:
 		o.shotMgr = x
+	case *exportstate.ExportManager:
+		o.exportMgr = x
 	}
 	o.stateEng.AddManager(mgr)
 }
@@ -589,6 +597,11 @@ func (o *Overlord) TaskRunner() *state.TaskRunner {
 // the overlord.
 func (o *Overlord) SnapManager() *snapstate.SnapManager {
 	return o.snapMgr
+}
+
+// ExportManager returns the export manager responsible keeping exported content up-to-date.
+func (o *Overlord) ExportManager() *exportstate.ExportManager {
+	return o.exportMgr
 }
 
 // AssertManager returns the assertion manager enforcing assertions
