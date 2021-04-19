@@ -2599,17 +2599,13 @@ apps:
 	flags.Reload = false
 	c.Assert(wrappers.RestartServices(info.Services(), flags, progress.Null, s.perfTimings), IsNil)
 	c.Check(s.sysdLog, DeepEquals, [][]string{
-		{"stop", srvFile},
-		{"show", "--property=ActiveState", srvFile},
-		{"start", srvFile},
+		{"restart", srvFile},
 	})
 
 	s.sysdLog = nil
 	c.Assert(wrappers.RestartServices(info.Services(), nil, progress.Null, s.perfTimings), IsNil)
 	c.Check(s.sysdLog, DeepEquals, [][]string{
-		{"stop", srvFile},
-		{"show", "--property=ActiveState", srvFile},
-		{"start", srvFile},
+		{"restart", srvFile},
 	})
 }
 

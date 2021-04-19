@@ -728,9 +728,7 @@ func (s *serviceControlSuite) TestRestartServices(c *C) {
 
 	c.Assert(t.Status(), Equals, state.DoneStatus)
 	c.Check(s.sysctlArgs, DeepEquals, [][]string{
-		{"stop", "snap.test-snap.foo.service"},
-		{"show", "--property=ActiveState", "snap.test-snap.foo.service"},
-		{"start", "snap.test-snap.foo.service"},
+		{"restart", "snap.test-snap.foo.service"},
 	})
 }
 
@@ -757,15 +755,9 @@ func (s *serviceControlSuite) TestRestartAllServices(c *C) {
 
 	c.Assert(t.Status(), Equals, state.DoneStatus)
 	c.Check(s.sysctlArgs, DeepEquals, [][]string{
-		{"stop", "snap.test-snap.foo.service"},
-		{"show", "--property=ActiveState", "snap.test-snap.foo.service"},
-		{"start", "snap.test-snap.foo.service"},
-		{"stop", "snap.test-snap.bar.service"},
-		{"show", "--property=ActiveState", "snap.test-snap.bar.service"},
-		{"start", "snap.test-snap.bar.service"},
-		{"stop", "snap.test-snap.abc.service"},
-		{"show", "--property=ActiveState", "snap.test-snap.abc.service"},
-		{"start", "snap.test-snap.abc.service"},
+		{"restart", "snap.test-snap.foo.service"},
+		{"restart", "snap.test-snap.bar.service"},
+		{"restart", "snap.test-snap.abc.service"},
 	})
 }
 
@@ -861,12 +853,14 @@ func (s *serviceControlSuite) TestUpdateSnapstateServices(c *C) {
 		},
 		{
 			enable: []string{"a"},
+			// keep this to make old gofmt happy
 			expectedSnapstateEnabled: []string{"a"},
 			changed:                  true,
 		},
 		// enable again does nothing
 		{
 			enable: []string{"a"},
+			// keep this to make old gofmt happy
 			expectedSnapstateEnabled: []string{"a"},
 			changed:                  false,
 		},
@@ -877,6 +871,7 @@ func (s *serviceControlSuite) TestUpdateSnapstateServices(c *C) {
 		},
 		{
 			enable: []string{"a", "c"},
+			// keep this to make old gofmt happy
 			expectedSnapstateEnabled: []string{"a", "c"},
 			changed:                  true,
 		},
