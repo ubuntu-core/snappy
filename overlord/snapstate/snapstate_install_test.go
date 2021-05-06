@@ -3640,7 +3640,7 @@ volumes:
 	c.Assert(hookstate.HookTask(s.state, "", hooksup, contextData), NotNil)
 }
 
-func (s *snapmgrTestSuite) TestInstallContentPrerequisiteFailure(c *C) {
+func (s *snapmgrTestSuite) TestInstallContentProviderDownloadFailure(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
