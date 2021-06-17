@@ -49,14 +49,18 @@ apps:
 
 const cupsProviderYaml = `name: provider
 version: 0
+slots:
+  cups-socket:
+    interface: cups
+    cups-socket: /foo/bar
 apps:
  app:
-  slots: [cups]
+  slots: [cups-socket]
 `
 
 func (s *cupsSuite) SetUpTest(c *C) {
 	s.plug, s.plugInfo = MockConnectedPlug(c, cupsConsumerYaml, nil, "cups")
-	s.providerSlot, s.providerSlotInfo = MockConnectedSlot(c, cupsProviderYaml, nil, "cups")
+	s.providerSlot, s.providerSlotInfo = MockConnectedSlot(c, cupsProviderYaml, nil, "cups-socket")
 }
 
 func (s *cupsSuite) TestName(c *C) {
