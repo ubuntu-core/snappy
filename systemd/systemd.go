@@ -1262,24 +1262,29 @@ func (s *systemd) RemoveMountUnitFile(mountedDir string) error {
 	if err != nil {
 		return err
 	}
+	mountUnitName := filepath.Base(unit)
 	if isMounted {
 		if output, err := exec.Command("umount", "-d", "-l", mountedDir).CombinedOutput(); err != nil {
 			return osutil.OutputErr(output, err)
 		}
 
-		if err := s.Stop(time.Duration(1*time.Second), filepath.Base(unit)); err != nil {
+		if err := s.Stop(time.Duration(1*time.Second), mountUnitName); err != nil {
 			return err
 		}
 	}
-	if err := s.Disable(filepath.Base(unit)); err != nil {
+	if err := s.Disable(mountUnitName); err != nil {
 		return err
 	}
+	if err := s.ResetFailedIfNeeded(mountUnitName); err != nil {
+		return err
+	}
+
 	if err := os.Remove(unit); err != nil {
 		return err
 	}
-	// daemon-reload to ensure that systemd actually really
+	// daemon-reload if needed to ensure that systemd actually really
 	// forgets about this mount unit
-	if err := s.daemonReloadNoLock(); err != nil {
+	if err := s.daemonReloadIfNeededWithLock(true, false, mountUnitName); err != nil {
 		return err
 	}
 
