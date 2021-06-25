@@ -522,6 +522,7 @@ func EnsureSnapServices(snaps map[*snap.Info]*SnapServiceOptions, opts *EnsureSn
 	// function is interrupted midway
 	modifiedUnitsPreviousState := make(map[string]*osutil.MemoryFileState)
 	var modifiedSystem, modifiedUser bool
+	var systemUnits []string
 
 	defer func() {
 		if err == nil {
@@ -542,7 +543,7 @@ func EnsureSnapServices(snaps map[*snap.Info]*SnapServiceOptions, opts *EnsureSn
 			}
 		}
 		if modifiedSystem && !preseeding {
-			if e := sysd.DaemonReload(); e != nil {
+			if e := sysd.DaemonReloadIfNeeded(true, systemUnits...); e != nil {
 				inter.Notify(fmt.Sprintf("while trying to perform systemd daemon-reload due to previous failure: %v", e))
 			}
 		}
@@ -574,6 +575,7 @@ func EnsureSnapServices(snaps map[*snap.Info]*SnapServiceOptions, opts *EnsureSn
 			switch app.DaemonScope {
 			case snap.SystemDaemon:
 				modifiedSystem = true
+				systemUnits = append(systemUnits, filepath.Base(path))
 			case snap.UserDaemon:
 				modifiedUser = true
 			}
@@ -672,6 +674,7 @@ func EnsureSnapServices(snaps map[*snap.Info]*SnapServiceOptions, opts *EnsureSn
 			// also mark that we need to reload the system instance of systemd
 			// TODO: also handle reloading the user instance of systemd when
 			// needed
+			systemUnits = append(systemUnits, filepath.Base(path))
 			modifiedSystem = true
 		}
 
@@ -694,7 +697,7 @@ func EnsureSnapServices(snaps map[*snap.Info]*SnapServiceOptions, opts *EnsureSn
 
 	if !preseeding {
 		if modifiedSystem {
-			if err = sysd.DaemonReload(); err != nil {
+			if err := sysd.DaemonReloadIfNeeded(true, systemUnits...); err != nil {
 				return err
 			}
 		}
@@ -925,11 +928,19 @@ func RemoveSnapServices(s *snap.Info, inter interacter) error {
 			logger.Noticef("Failed to remove service file for %q: %v", serviceName, err)
 		}
 
+	// When a service is in failed state, simply disabling it does not make
+	// systemd 'forget' about it: the state is kept for administrators to
+	// take a look at it. To remove it, we use the reset-failed systemctl
+	// command - otherwise we would need a daemon-reload if we reinstall the
+	// same snap, which is much more costly.
+	if err := systemSysd.ResetFailedIfNeeded(systemUnits...); err != nil {
+		logger.Noticef("RemoveSnapServices - ResetFailedIfNeeded %v", err)
+		return err
 	}
 
 	// only reload if we actually had services
 	if removedSystem {
-		if err := systemSysd.DaemonReload(); err != nil {
+		if err := systemSysd.DaemonReloadIfNeeded(false, systemUnits...); err != nil {
 			return err
 		}
 	}
