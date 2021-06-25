@@ -42,6 +42,7 @@ import (
 	"github.com/snapcore/snapd/gadget/quantity"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/osutil/squashfs"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/sandbox/selinux"
 )
 
@@ -312,15 +313,39 @@ type reporter interface {
 	Notify(string)
 }
 
+// SNAP_BOOTIMG_PART_NUM  is the number of available boot image partitions
+const MIN_UBUNTU_RELEASE = 18
+
+// Based on the release info, determine if systemd can be clever about
+// things like daemon-reload
+func smartSystemd() bool {
+	smart := false
+	// we act smart on Ubuntu Core 20 and Ubuntu 20.04 and newer
+	if "ubuntu-core" == release.ReleaseInfo.ID {
+		ver, err := strconv.Atoi(release.ReleaseInfo.VersionID)
+		if err == nil && ver >= MIN_UBUNTU_RELEASE {
+			smart = true
+		}
+	} else if "ubuntu" == release.ReleaseInfo.ID {
+		if 2 < len(release.ReleaseInfo.VersionID) {
+			ver, err := strconv.Atoi(release.ReleaseInfo.VersionID[0:2])
+			if err == nil && ver >= MIN_UBUNTU_RELEASE {
+				smart = true
+			}
+		}
+	}
+	return smart
+}
+
 // New returns a Systemd that uses the default root directory and omits
 // --root argument when executing systemctl.
 func New(mode InstanceMode, rep reporter) Systemd {
-	return &systemd{mode: mode, reporter: rep}
+	return &systemd{mode: mode, reporter: rep, smart: smartSystemd()}
 }
 
 // NewUnderRoot returns a Systemd that operates on the given rootdir.
 func NewUnderRoot(rootDir string, mode InstanceMode, rep reporter) Systemd {
-	return &systemd{rootDir: rootDir, mode: mode, reporter: rep}
+	return &systemd{rootDir: rootDir, mode: mode, reporter: rep, smart: smartSystemd()}
 }
 
 // NewEmulationMode returns a Systemd that runs in emulation mode where
@@ -357,6 +382,7 @@ type systemd struct {
 	rootDir  string
 	reporter reporter
 	mode     InstanceMode
+	smart    bool
 }
 
 func (s *systemd) systemctl(args ...string) ([]byte, error) {
