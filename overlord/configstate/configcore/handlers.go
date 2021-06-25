@@ -47,6 +47,19 @@ type flags struct {
 	// If set the function should copy such options from values
 	// to early.
 	earlyConfigFilter filterFunc
+
+	// preinstallFilter is similar to earlyConfigFilter in that
+	// it allows a handler to express that certain configuration options should
+	// be applied to the filesystem directory indicated by fsOnlyContext.RootDir
+	// in the  stage before the image is booted (called "preinstall"). This
+	// filesystem for UC18 can be a full root filesystem, but for UC20 this
+	// filesystem will be just a recovery system.
+	// This is primarily meant for gadget assets such as config.txt on the Pi
+	// that need to be processed before the image is even booted (since the Pi
+	// GPU bootloader is what processes config.txt, modifying at runtime after
+	// booting is too late and would require a reboot to take effect).
+	// Note that this is currently only used for UC20 preinstall.
+	preinstallFilter filterFunc
 }
 
 type fsOnlyHandler struct {
@@ -80,7 +93,7 @@ func init() {
 	addFSOnlyHandler(nil, handlePowerButtonConfiguration, coreOnly)
 
 	// pi-config.*
-	addFSOnlyHandler(nil, handlePiConfiguration, coreOnly)
+	addFSOnlyHandler(nil, handlePiConfiguration, &flags{coreOnlyConfig: true, preinstallFilter: preinstallPiSettingsFilter})
 
 	// system.disable-backlight-service
 	addFSOnlyHandler(validateBacklightServiceSettings, handleBacklightServiceConfiguration, coreOnly)
@@ -99,6 +112,10 @@ func init() {
 
 	sysconfig.ApplyFilesystemOnlyDefaultsImpl = func(rootDir string, defaults map[string]interface{}, options *sysconfig.FilesystemOnlyApplyOptions) error {
 		return filesystemOnlyApply(rootDir, defaults, options)
+	}
+
+	sysconfig.ApplyPreinstallFilesystemOnlyDefaultsImpl = func(rootDir string, defaults map[string]interface{}, options *sysconfig.FilesystemOnlyApplyOptions) error {
+		return preinstallFilesystemOnlyApply(rootDir, defaults, options)
 	}
 }
 
@@ -178,5 +195,65 @@ func filesystemOnlyApply(rootDir string, values map[string]interface{}, opts *sy
 			return err
 		}
 	}
+	return nil
+}
+
+// preinstallFilesystemOnlyApply is like filesystemOnlyApply, except that it is
+// only meant to be called before the installation happens, when the image is
+// constructed. This enables certain settings like the pi-config options to
+// be applied to things in the image that must happen before booting, typically
+// bootloader related settings that cannot be applied at runtime without a
+// reboot.
+// The first argument here can either be a recovery system on UC20, or it could
+// be an actual root filesystem in the UC18 case, though we have not yet enabled
+// this for UC18, but the code does support it.
+func preinstallFilesystemOnlyApply(systemDir string, values map[string]interface{}, opts *sysconfig.FilesystemOnlyApplyOptions) error {
+	if systemDir == "" {
+		return fmt.Errorf("internal error: root directory for configcore.FilesystemOnlyApply() not set")
+	}
+
+	if opts == nil {
+		opts = &sysconfig.FilesystemOnlyApplyOptions{}
+	}
+
+	// filter the values to only keep values that use the preinstall flag
+	preinstall, preinstallHandlers := applyFilters(func(f flags) filterFunc {
+		return f.preinstallFilter
+	}, values)
+
+	// use only the filtered keys that we got in the above loop for the config
+	cfg := plainCoreConfig(preinstall)
+
+	// validate all of the keys that are relevant to preinstallation against
+	// all of the handlers that are relevant to preinstallation
+	for _, h := range preinstallHandlers {
+		if h.needsState() {
+			// it doesn't make sense to have a handler which needs state, but
+			// is also called in a preinstallation context
+			return fmt.Errorf("internal error: handler needs state but is used in preinstall context")
+		}
+
+		if err := h.validate(cfg); err != nil {
+			return err
+		}
+	}
+
+	ctx := &fsOnlyContext{
+		RootDir: systemDir,
+		// TODO: currently we always set this to true, but the code works on
+		//       UC18 for example if we decided on how to pass in that info to
+		//       this function
+		UC20Recovery: true,
+	}
+	for _, h := range preinstallHandlers {
+		if h.flags().coreOnlyConfig && opts != nil && opts.Classic {
+			continue
+		}
+
+		if err := h.handle(cfg, ctx); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

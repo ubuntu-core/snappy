@@ -32,6 +32,7 @@ import (
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/overlord/configstate/configcore"
 	"github.com/snapcore/snapd/release"
+	"github.com/snapcore/snapd/sysconfig"
 	"github.com/snapcore/snapd/testutil"
 )
 
@@ -266,6 +267,98 @@ func (s *piCfgSuite) TestFilesystemOnlyApply(c *C) {
 
 	c.Assert(configcore.FilesystemOnlyApply(tmpDir, conf, nil), IsNil)
 
+	expected := strings.Replace(mockConfigTxt, "#gpu_mem_512=true", "gpu_mem_512=true", -1)
+	c.Check(piCfg, testutil.FileEquals, expected)
+}
+
+func (s *piCfgSuite) TestFilesystemOnlyApplyUC20RunMode(c *C) {
+	conf := configcore.PlainCoreConfig(map[string]interface{}{
+		"pi-config.gpu-mem-512": true,
+	})
+
+	tmpDir := c.MkDir()
+	dirs.SetRootDir(tmpDir)
+	defer func() { dirs.SetRootDir("") }()
+
+	// mock the device as uc20 run mode
+	mockCmdline := filepath.Join(tmpDir, "cmdline")
+	err := ioutil.WriteFile(mockCmdline, []byte("snapd_recovery_mode=run"), 0644)
+	c.Assert(err, IsNil)
+	restore := osutil.MockProcCmdline(mockCmdline)
+	defer restore()
+
+	// write default config at both the uc18 style runtime location and uc20 run
+	// mode location to show that we only modify the uc20 one
+	piCfg := filepath.Join(boot.InitramfsUbuntuSeedDir, "config.txt")
+	uc18PiCfg := filepath.Join(tmpDir, "/boot/uboot/config.txt")
+
+	err = os.MkdirAll(filepath.Dir(piCfg), 0755)
+	c.Assert(err, IsNil)
+	err = os.MkdirAll(filepath.Dir(uc18PiCfg), 0755)
+	c.Assert(err, IsNil)
+
+	err = ioutil.WriteFile(piCfg, []byte(mockConfigTxt), 0644)
+	c.Assert(err, IsNil)
+	err = ioutil.WriteFile(uc18PiCfg, []byte(mockConfigTxt), 0644)
+	c.Assert(err, IsNil)
+
+	// apply the config
+	c.Assert(configcore.FilesystemOnlyApply(tmpDir, conf, nil), IsNil)
+
+	// make sure that the original pi config.txt in /boot/uboot/config.txt
+	// didn't change
+	c.Check(uc18PiCfg, testutil.FileEquals, mockConfigTxt)
+
+	// but the real one did change*
+	expected := strings.Replace(mockConfigTxt, "#gpu_mem_512=true", "gpu_mem_512=true", -1)
+	c.Check(piCfg, testutil.FileEquals, expected)
+}
+
+func (s *piCfgSuite) TestPreinstallFilesystemOnlyApplyUC18DoesNothing(c *C) {
+	keys := map[string]interface{}{
+		"pi-config.gpu-mem-512": true,
+		// irrelevant key not used with preinstall
+		"journal.persistent": true,
+	}
+
+	tmpDir := c.MkDir()
+	c.Assert(os.MkdirAll(filepath.Join(tmpDir, "/boot/uboot"), 0755), IsNil)
+
+	// write default config
+	piCfg := filepath.Join(tmpDir, "/boot/uboot/config.txt")
+	c.Assert(ioutil.WriteFile(piCfg, []byte(mockConfigTxt), 0644), IsNil)
+
+	c.Assert(configcore.PreinstallFilesystemOnlyApply(tmpDir, keys, nil), IsNil)
+
+	// ensure that the file didn't change, we don't yet support doing this
+	// pre-install for non-uc20, even for pi-config settings
+	c.Check(piCfg, testutil.FileEquals, mockConfigTxt)
+}
+
+func (s *piCfgSuite) TestPreinstallFilesystemOnlyApplyUC20(c *C) {
+	keys := map[string]interface{}{
+		"pi-config.gpu-mem-512": true,
+	}
+
+	tmpDir := c.MkDir()
+	c.Assert(os.MkdirAll(filepath.Join(tmpDir, "/boot/uboot"), 0755), IsNil)
+
+	// write default config at both the runtime location and the uc20
+	// prepare-image time location
+	piCfg := filepath.Join(tmpDir, "config.txt")
+	originalPiCfg := filepath.Join(tmpDir, "/boot/uboot/config.txt")
+	c.Assert(ioutil.WriteFile(piCfg, []byte(mockConfigTxt), 0644), IsNil)
+	c.Assert(ioutil.WriteFile(originalPiCfg, []byte(mockConfigTxt), 0644), IsNil)
+
+	opts := &sysconfig.FilesystemOnlyApplyOptions{}
+
+	c.Assert(configcore.PreinstallFilesystemOnlyApply(tmpDir, keys, opts), IsNil)
+
+	// make sure that the original pi config.txt in /boot/uboot/config.txt
+	// didn't change
+	c.Check(originalPiCfg, testutil.FileEquals, mockConfigTxt)
+
+	// but the real one did change
 	expected := strings.Replace(mockConfigTxt, "#gpu_mem_512=true", "gpu_mem_512=true", -1)
 	c.Check(piCfg, testutil.FileEquals, expected)
 }
