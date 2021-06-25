@@ -139,11 +139,9 @@ func stopService(sysd systemd.Systemd, app *snap.AppInfo, inter interacter) erro
 
 	switch app.DaemonScope {
 	case snap.SystemDaemon:
-		stopErrors := []error{}
-		for _, service := range extraServices {
-			if err := sysd.Stop(tout, service); err != nil {
-				stopErrors = append(stopErrors, err)
-			}
+		var stopError error
+		if 0 < len(extraServices) {
+			stopError = sysd.Stop(tout, extraServices...)
 		}
 
 		if err := sysd.Stop(tout, serviceName); err != nil {
@@ -157,8 +155,8 @@ func stopService(sysd systemd.Systemd, app *snap.AppInfo, inter interacter) erro
 			sysd.Kill(serviceName, "KILL", "")
 		}
 
-		if len(stopErrors) > 0 {
-			return stopErrors[0]
+		if stopError != nil {
+			return stopError
 		}
 
 	case snap.UserDaemon:
