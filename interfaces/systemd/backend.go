@@ -135,13 +135,15 @@ func (b *Backend) Remove(snapName string) error {
 	// Remove all the files matching snap glob
 	glob := interfaces.InterfaceServiceName(snapName, "*")
 	_, removed, errEnsure := osutil.EnsureDirState(dirs.SnapServicesDir, glob, nil)
-	for _, service := range removed {
-		if err := systemd.Disable(service); err != nil {
-			logger.Noticef("cannot disable service %q: %s", service, err)
+
+	if len(removed) > 0 {
+		logger.Noticef("systemd-backend: Disable: removed services: %q", removed)
+		if err := systemd.Disable(removed...); err != nil {
+			logger.Noticef("cannot disable service %q: %s", removed, err)
 		}
 		if !b.preseed {
-			if err := systemd.Stop(5*time.Second, service); err != nil {
-				logger.Noticef("cannot stop service %q: %s", service, err)
+			if err := systemd.Stop(5*time.Second, removed...); err != nil {
+				logger.Noticef("cannot stop service %q: %s", removed, err)
 			}
 		}
 	}
