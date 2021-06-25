@@ -179,15 +179,11 @@ func enableServices(apps []*snap.AppInfo, inter interacter) (disable func(), err
 	userSysd := systemd.New(systemd.GlobalUserMode, inter)
 
 	disableEnabledServices := func() {
-		for _, srvName := range enabled {
-			if e := systemSysd.Disable(srvName); e != nil {
-				inter.Notify(fmt.Sprintf("While trying to disable previously enabled service %q: %v", srvName, e))
-			}
+		if e := systemSysd.Disable(enabled...); e != nil {
+			inter.Notify(fmt.Sprintf("While trying to disable previously enabled service %q: %v", enabled, e))
 		}
-		for _, s := range userEnabled {
-			if e := userSysd.Disable(s); e != nil {
-				inter.Notify(fmt.Sprintf("while trying to disable %s due to previous failure: %v", s, e))
-			}
+		if e := userSysd.Disable(userEnabled...); e != nil {
+			inter.Notify(fmt.Sprintf("while trying to disable %q due to previous failure: %v", userEnabled, e))
 		}
 	}
 
@@ -198,28 +194,23 @@ func enableServices(apps []*snap.AppInfo, inter interacter) (disable func(), err
 	}()
 
 	for _, app := range apps {
-		var sysd systemd.Systemd
-		switch app.DaemonScope {
-		case snap.SystemDaemon:
-			sysd = systemSysd
-		case snap.UserDaemon:
-			sysd = userSysd
-		}
-
 		svcName := app.ServiceName()
 
 		switch app.DaemonScope {
 		case snap.SystemDaemon:
-			if err = sysd.Enable(svcName); err != nil {
-				return nil, err
-
-			}
 			enabled = append(enabled, svcName)
 		case snap.UserDaemon:
-			if err = userSysd.Enable(svcName); err != nil {
-				return nil, err
-			}
 			userEnabled = append(userEnabled, svcName)
+		}
+	}
+	if 0 < len(enabled) {
+		if e := systemSysd.Enable(enabled...); e != nil {
+			return nil, err
+		}
+	}
+	if 0 < len(userEnabled) {
+		if e := userSysd.Enable(userEnabled...); e != nil {
+			return nil, err
 		}
 	}
 
