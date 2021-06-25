@@ -185,17 +185,26 @@ func (b *Backend) disableRemovedServices(systemd sysd.Systemd, dir, glob string,
 	if err != nil {
 		return err
 	}
+
+	var stopUnits []string
+	var disableUnits []string
 	for _, path := range paths {
 		service := filepath.Base(path)
 		if content[service] == nil {
-			if err := systemd.Disable(service); err != nil {
-				logger.Noticef("cannot disable service %q: %s", service, err)
-			}
+			disableUnits = append(disableUnits, service)
 			if !b.preseed {
-				if err := systemd.Stop(5*time.Second, service); err != nil {
-					logger.Noticef("cannot stop service %q: %s", service, err)
-				}
+				stopUnits = append(stopUnits, service)
 			}
+		}
+	}
+	if 0 < len(disableUnits) {
+		if err := systemd.Disable(disableUnits...); err != nil {
+			logger.Noticef("cannot disable service %q: %s", disableUnits, err)
+		}
+	}
+	if 0 < len(stopUnits) {
+		if err := systemd.Stop(5*time.Second, stopUnits...); err != nil {
+			logger.Noticef("cannot stop service %q: %s", stopUnits, err)
 		}
 	}
 	return nil
