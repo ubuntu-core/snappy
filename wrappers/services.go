@@ -761,6 +761,8 @@ func StopServices(apps []*snap.AppInfo, flags *StopServicesFlags, reason snap.Se
 	} else {
 		logger.Debugf("StopServices called for %q", apps)
 	}
+
+	disableServices := []string{}
 	for _, app := range apps {
 		// Handle the case where service file doesn't exist and don't try to stop it as it will fail.
 		// This can happen with snap try when snap.yaml is modified on the fly and a daemon line is added.
@@ -782,7 +784,7 @@ func StopServices(apps []*snap.AppInfo, flags *StopServicesFlags, reason snap.Se
 		timings.Run(tm, "stop-service", fmt.Sprintf("stop service %q", app.ServiceName()), func(nested timings.Measurer) {
 			err = stopService(sysd, app, inter)
 			if err == nil && flags.Disable {
-				err = sysd.Disable(app.ServiceName())
+				disableServices = append(disableServices, app.ServiceName())
 			}
 		})
 		if err != nil {
@@ -798,6 +800,11 @@ func StopServices(apps []*snap.AppInfo, flags *StopServicesFlags, reason snap.Se
 			sysd.Kill(app.ServiceName(), "TERM", "all")
 			time.Sleep(killWait)
 			sysd.Kill(app.ServiceName(), "KILL", "")
+		}
+	}
+	if 0 < len(disableServices) {
+		if err := sysd.Disable(disableServices...); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -867,19 +874,20 @@ func RemoveSnapServices(s *snap.Info, inter interacter) error {
 	systemSysd := systemd.New(systemd.SystemMode, inter)
 	userSysd := systemd.New(systemd.GlobalUserMode, inter)
 	var removedSystem, removedUser bool
+	systemUnits := []string{}
+	userUnits := []string{}
+	systemUnitsFiles := []string{}
 
+	// collect list of system units to disable and remove
 	for _, app := range s.Apps {
 		if !app.IsService() || !osutil.FileExists(app.ServiceFile()) {
 			continue
 		}
 
-		var sysd systemd.Systemd
 		switch app.DaemonScope {
 		case snap.SystemDaemon:
-			sysd = systemSysd
 			removedSystem = true
 		case snap.UserDaemon:
-			sysd = userSysd
 			removedUser = true
 		}
 		serviceName := filepath.Base(app.ServiceFile())
@@ -887,35 +895,60 @@ func RemoveSnapServices(s *snap.Info, inter interacter) error {
 		for _, socket := range app.Sockets {
 			path := socket.File()
 			socketServiceName := filepath.Base(path)
-			if err := sysd.Disable(socketServiceName); err != nil {
-				return err
+			logger.Noticef("RemoveSnapServices - socket %s", socketServiceName)
+			switch app.DaemonScope {
+			case snap.SystemDaemon:
+				systemUnits = append(systemUnits, socketServiceName)
+			case snap.UserDaemon:
+				userUnits = append(userUnits, socketServiceName)
 			}
-
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				logger.Noticef("Failed to remove socket file %q for %q: %v", path, serviceName, err)
-			}
+			systemUnitsFiles = append(systemUnitsFiles, path)
 		}
 
 		if app.Timer != nil {
 			path := app.Timer.File()
 
 			timerName := filepath.Base(path)
-			if err := sysd.Disable(timerName); err != nil {
-				return err
+			logger.Noticef("RemoveSnapServices - timer %s", timerName)
+			switch app.DaemonScope {
+			case snap.SystemDaemon:
+				systemUnits = append(systemUnits, timerName)
+			case snap.UserDaemon:
+				userUnits = append(userUnits, timerName)
 			}
-
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				logger.Noticef("Failed to remove timer file %q for %q: %v", path, serviceName, err)
-			}
+			systemUnitsFiles = append(systemUnitsFiles, path)
 		}
 
-		if err := sysd.Disable(serviceName); err != nil {
+		logger.Noticef("RemoveSnapServices - disabling %s", serviceName)
+		switch app.DaemonScope {
+		case snap.SystemDaemon:
+			systemUnits = append(systemUnits, serviceName)
+		case snap.UserDaemon:
+			userUnits = append(userUnits, serviceName)
+		}
+		systemUnitsFiles = append(systemUnitsFiles, app.ServiceFile())
+	}
+
+	// disable all collected systemd units
+	if 0 < len(systemUnits) {
+		if err := systemSysd.Disable(systemUnits...); err != nil {
 			return err
 		}
+	}
 
-		if err := os.Remove(app.ServiceFile()); err != nil && !os.IsNotExist(err) {
-			logger.Noticef("Failed to remove service file for %q: %v", serviceName, err)
+	// disable all collected user units
+	if 0 < len(userUnits) {
+		if err := userSysd.Disable(userUnits...); err != nil {
+			return err
 		}
+	}
+
+	// remove unit filenames
+	for i := 0; i < len(systemUnitsFiles); i++ {
+		if err := os.Remove(systemUnitsFiles[i]); err != nil && !os.IsNotExist(err) {
+			logger.Noticef("Failed to remove socket file %q: %v", systemUnitsFiles[i], err)
+		}
+	}
 
 	// When a service is in failed state, simply disabling it does not make
 	// systemd 'forget' about it: the state is kept for administrators to
