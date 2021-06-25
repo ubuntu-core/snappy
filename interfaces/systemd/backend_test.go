@@ -90,6 +90,7 @@ func (s *backendSuite) TestInstallingSnapWritesStartsServices(c *C) {
 	c.Check(err, IsNil)
 	// the service was also started (whee)
 	c.Check(sysdLog, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.samba.interface.foo.service"},
 		{"daemon-reload"},
 		{"enable", "snap.samba.interface.foo.service"},
 		{"stop", "snap.samba.interface.foo.service"},
@@ -115,7 +116,7 @@ func (s *backendSuite) TestRemovingSnapRemovesAndStopsServices(c *C) {
 			{"systemctl", "disable", "snap.samba.interface.foo.service"},
 			{"systemctl", "stop", "snap.samba.interface.foo.service"},
 			{"systemctl", "show", "--property=ActiveState", "snap.samba.interface.foo.service"},
-			{"systemctl", "daemon-reload"},
+			{"systemctl", "show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.samba.interface.foo.service"},
 		})
 	}
 }
@@ -149,7 +150,7 @@ func (s *backendSuite) TestSettingUpSecurityWithFewerServices(c *C) {
 		{"systemctl", "disable", "snap.samba.interface.bar.service"},
 		{"systemctl", "stop", "snap.samba.interface.bar.service"},
 		{"systemctl", "show", "--property=ActiveState", "snap.samba.interface.bar.service"},
-		{"systemctl", "daemon-reload"},
+		{"systemctl", "show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.samba.interface.bar.service"},
 	})
 }
 
