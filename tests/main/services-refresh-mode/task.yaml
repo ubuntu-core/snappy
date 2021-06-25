@@ -11,6 +11,19 @@ debug: |
 
 execute: |
     echo "When the service snap is installed"
+    systemctl status snap.test-snapd-service.test-snapd-sighup-all-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-sigusr1-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-sigusr2-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-sighup-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-service-refuses-to-stop.service || true
+    systemctl status snap.test-snapd-service.test-snapd-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-sigusr1-all-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-sigterm-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-sigusr2-all-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-sigterm-all-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-endure-service.service || true
+    systemctl status snap.test-snapd-service.test-snapd-other-service.service || true
+    ls -l /etc/systemd/system || true
     "$TESTSTOOLS"/snaps-state install-local test-snapd-service
 
     echo "We can see it running"
