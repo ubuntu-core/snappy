@@ -89,22 +89,33 @@ func (b *Backend) Setup(snapInfo *snap.Info, confinement interfaces.ConfinementO
 	}
 	changed, removed, errEnsure := osutil.EnsureDirState(dir, glob, content)
 	// Reload systemd whenever something is added or removed
-	if !b.preseed && (len(changed) > 0 || len(removed) > 0) {
-		err := systemd.DaemonReload()
-		if err != nil {
-			logger.Noticef("cannot reload systemd state: %s", err)
+	if !b.preseed {
+		if len(changed) > 0 {
+			err := systemd.DaemonReloadIfNeeded(true, changed...)
+			if err != nil {
+				logger.Noticef("cannot reload systemd state: %s", err)
+			}
+		}
+		if len(removed) > 0 {
+			err := systemd.DaemonReloadIfNeeded(false, removed...)
+			if err != nil {
+				logger.Noticef("cannot reload systemd state: %s", err)
+			}
 		}
 	}
-	// Ensure the service is running right now and on reboots
-	for _, service := range changed {
-		if err := systemd.Enable(service); err != nil {
-			logger.Noticef("cannot enable service %q: %s", service, err)
+
+	if len(changed) > 0 {
+		logger.Noticef("systemd-backend: Setup: changed services: %q", changed)
+		if err := systemd.Enable(changed...); err != nil {
+			logger.Noticef("cannot enable services %q: %s", changed, err)
 		}
+		// Ensure the service is running right now and on reboots
+		// If we have a new service here which isn't started yet the restart
+		// operation will start it.
 		if !b.preseed {
-			// If we have a new service here which isn't started yet the restart
-			// operation will start it.
-			if err := systemd.Restart(10*time.Second, service); err != nil {
-				logger.Noticef("cannot restart service %q: %s", service, err)
+			logger.Noticef("systemd-backend: Setup: Restart service: %q", changed)
+			if err := systemd.Restart(10*time.Second, changed...); err != nil {
+				logger.Noticef("cannot restart service %q: %s", changed, err)
 			}
 		}
 	}
