@@ -213,10 +213,10 @@ type Systemd interface {
 	// only necessary to apply manager's configuration like
 	// watchdog.
 	DaemonReexec() error
-	// Enable the given service.
-	Enable(service string) error
-	// Disable the given service.
-	Disable(service string) error
+	// Enable the given services.
+	Enable(services ...string) error
+	// Disable the given services.
+	Disable(services ...string) error
 	// Start the given service or services.
 	Start(service ...string) error
 	// StartNoBlock starts the given service or services non-blocking.
@@ -426,12 +426,12 @@ func (s *systemd) DaemonReexec() error {
 	return err
 }
 
-func (s *systemd) Enable(serviceName string) error {
+func (s *systemd) Enable(serviceNames ...string) error {
 	var err error
 	if s.rootDir != "" {
-		_, err = s.systemctl("--root", s.rootDir, "enable", serviceName)
+		_, err = s.systemctl(append([]string{"--root", s.rootDir, "enable"}, serviceNames...)...)
 	} else {
-		_, err = s.systemctl("enable", serviceName)
+		_, err = s.systemctl(append([]string{"enable"}, serviceNames...)...)
 	}
 	return err
 }
@@ -446,12 +446,12 @@ func (s *systemd) Unmask(serviceName string) error {
 	return err
 }
 
-func (s *systemd) Disable(serviceName string) error {
+func (s *systemd) Disable(serviceNames ...string) error {
 	var err error
 	if s.rootDir != "" {
-		_, err = s.systemctl("--root", s.rootDir, "disable", serviceName)
+		_, err = s.systemctl(append([]string{"--root", s.rootDir, "disable"}, serviceNames...)...)
 	} else {
-		_, err = s.systemctl("disable", serviceName)
+		_, err = s.systemctl(append([]string{"disable"}, serviceNames...)...)
 	}
 	return err
 }

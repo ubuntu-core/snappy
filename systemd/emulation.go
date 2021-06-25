@@ -49,13 +49,13 @@ func (s *emulation) DaemonReexec() error {
 	return errNotImplemented
 }
 
-func (s *emulation) Enable(service string) error {
-	_, err := systemctlCmd("--root", s.rootDir, "enable", service)
+func (s *emulation) Enable(service ...string) error {
+	_, err := systemctlCmd(append([]string{"--root", s.rootDir, "enable"}, service...)...)
 	return err
 }
 
-func (s *emulation) Disable(service string) error {
-	_, err := systemctlCmd("--root", s.rootDir, "disable", service)
+func (s *emulation) Disable(service ...string) error {
+	_, err := systemctlCmd(append([]string{"--root", s.rootDir, "disable"}, service...)...)
 	return err
 }
 
