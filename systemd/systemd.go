@@ -1188,7 +1188,7 @@ func (s *systemd) RemoveMountUnitFile(mountedDir string) error {
 			return osutil.OutputErr(output, err)
 		}
 
-		if err := s.Stop(filepath.Base(unit), time.Duration(1*time.Second)); err != nil {
+		if err := s.Stop(time.Duration(1*time.Second), filepath.Base(unit)); err != nil {
 			return err
 		}
 	}
