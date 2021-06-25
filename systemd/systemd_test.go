@@ -195,30 +195,36 @@ Type=simple
 Id=foo.service
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 
 Type=simple
 Id=bar.service
 ActiveState=reloading
 UnitFileState=static
+NeedDaemonReload=no
 
 Type=potato
 Id=baz.service
 ActiveState=inactive
 UnitFileState=disabled
+NeedDaemonReload=yes
 
 Type=
 Id=missing.service
 ActiveState=inactive
 UnitFileState=
+NeedDaemonReload=no
 `[1:]),
 		[]byte(`
 Id=some.timer
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=yes
 
 Id=other.socket
 ActiveState=active
 UnitFileState=disabled
+NeedDaemonReload=yes
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -226,44 +232,50 @@ UnitFileState=disabled
 	c.Assert(err, IsNil)
 	c.Check(out, DeepEquals, []*UnitStatus{
 		{
-			Daemon:    "simple",
-			UnitName:  "foo.service",
-			Active:    true,
-			Enabled:   true,
-			Installed: true,
+			Daemon:           "simple",
+			UnitName:         "foo.service",
+			Active:           true,
+			Enabled:          true,
+			Installed:        true,
+			NeedDaemonReload: false,
 		}, {
-			Daemon:    "simple",
-			UnitName:  "bar.service",
-			Active:    true,
-			Enabled:   true,
-			Installed: true,
+			Daemon:           "simple",
+			UnitName:         "bar.service",
+			Active:           true,
+			Enabled:          true,
+			Installed:        true,
+			NeedDaemonReload: false,
 		}, {
-			Daemon:    "potato",
-			UnitName:  "baz.service",
-			Active:    false,
-			Enabled:   false,
-			Installed: true,
+			Daemon:           "potato",
+			UnitName:         "baz.service",
+			Active:           false,
+			Enabled:          false,
+			Installed:        true,
+			NeedDaemonReload: true,
 		}, {
-			Daemon:    "",
-			UnitName:  "missing.service",
-			Active:    false,
-			Enabled:   false,
-			Installed: false,
+			Daemon:           "",
+			UnitName:         "missing.service",
+			Active:           false,
+			Enabled:          false,
+			Installed:        false,
+			NeedDaemonReload: false,
 		}, {
-			UnitName:  "some.timer",
-			Active:    true,
-			Enabled:   true,
-			Installed: true,
+			UnitName:         "some.timer",
+			Active:           true,
+			Enabled:          true,
+			Installed:        true,
+			NeedDaemonReload: true,
 		}, {
-			UnitName:  "other.socket",
-			Active:    true,
-			Enabled:   false,
-			Installed: true,
+			UnitName:         "other.socket",
+			Active:           true,
+			Enabled:          false,
+			Installed:        true,
+			NeedDaemonReload: true,
 		},
 	})
 	c.Check(s.rep.msgs, IsNil)
 	c.Assert(s.argses, DeepEquals, [][]string{
-		{"show", "--property=Id,ActiveState,UnitFileState,Type", "foo.service", "bar.service", "baz.service", "missing.service"},
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "foo.service", "bar.service", "baz.service", "missing.service"},
 		{"show", "--property=Id,ActiveState,UnitFileState", "some.timer", "other.socket"},
 	})
 }
@@ -275,11 +287,13 @@ Type=simple
 Id=foo.service
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 
 Type=simple
 Id=foo.service
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -312,6 +326,7 @@ Type=simple
 Id=bar.service
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -328,6 +343,7 @@ Id=foo.service
 ActiveState=active
 UnitFileState=enabled
 Potatoes=false
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -341,6 +357,7 @@ func (s *SystemdTestSuite) TestStatusMissingRequiredFieldService(c *C) {
 		[]byte(`
 Id=foo.service
 ActiveState=active
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -370,6 +387,7 @@ Id=foo.service
 ActiveState=active
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -385,6 +403,7 @@ Type=simple
 Id=
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -799,6 +818,7 @@ WantedBy=multi-user.target
 `[1:], mockSnapPath))
 
 	c.Assert(s.argses, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-snapname-123.mount"},
 		{"daemon-reload"},
 		{"--root", rootDir, "enable", "snap-snapname-123.mount"},
 		{"start", "snap-snapname-123.mount"},
@@ -833,6 +853,7 @@ WantedBy=multi-user.target
 `[1:], snapDir))
 
 	c.Assert(s.argses, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-snapname-x1.mount"},
 		{"daemon-reload"},
 		{"enable", "snap-snapname-x1.mount"},
 		{"start", "snap-snapname-x1.mount"},
@@ -1078,7 +1099,9 @@ func (s *SystemdTestSuite) TestRemoveMountUnit(c *C) {
 	// and the unit is disabled and the daemon reloaded
 	c.Check(s.argses, DeepEquals, [][]string{
 		{"--root", rootDir, "disable", "snap-foo-42.mount"},
-		{"daemon-reload"},
+		{"--root", rootDir, "is-failed", "snap-foo-42.mount"},
+		{"--root", rootDir, "reset-failed", "snap-foo-42.mount"},
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-foo-42.mount"},
 	})
 }
 

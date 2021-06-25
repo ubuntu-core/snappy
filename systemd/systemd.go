@@ -100,6 +100,10 @@ var systemctlCmd = func(args ...string) ([]byte, error) {
 	// TODO: including stderr here breaks many things when systemd is in debug
 	// output mode, see LP #1885597
 	bs, err := exec.Command("systemctl", args...).CombinedOutput()
+	if strings.Contains(string(bs), "changed on disk") {
+		// DETECTED changed on disk
+		return nil, &Error{cmd: args, exitCode: 1, msg: bs}
+	}
 	if err != nil {
 		exitCode, runErr := osutil.ExitCode(err)
 		return nil, &Error{cmd: args, exitCode: exitCode, runErr: runErr, msg: bs}
@@ -209,6 +213,9 @@ func MockJournalctl(f func(svcs []string, n int, follow bool) (io.ReadCloser, er
 type Systemd interface {
 	// DaemonReload reloads systemd's configuration.
 	DaemonReload() error
+	// DaemonReload reloads systemd's configuration if required
+	// adding flag is services are added(true) or removed(false), serviceNames list of services
+	DaemonReloadIfNeeded(adding bool, serviceNames ...string) error
 	// DaemonRexec reexecutes systemd's system manager, should be
 	// only necessary to apply manager's configuration like
 	// watchdog.
@@ -418,6 +425,41 @@ func (s *systemd) daemonReloadNoLock() error {
 	return err
 }
 
+func (s *systemd) DaemonReloadIfNeeded(adding bool, serviceNames ...string) error {
+	return s.daemonReloadIfNeededWithLock(false, adding, serviceNames...)
+}
+
+func (s *systemd) daemonReloadIfNeededWithLock(locked, adding bool, serviceNames ...string) error {
+	needReload := false
+	if s.smart {
+		for _, service := range serviceNames {
+			// A status error will happen if systemd thinks that the service does
+			// not exist anymore. We force the reload in that case, as we assume
+			// that the unit exists at this point.
+			status, err := s.Status(service)
+			if err != nil && adding {
+				needReload = true
+				continue
+			}
+
+			if err == nil && status[0].NeedDaemonReload {
+				needReload = true
+			}
+		}
+	} else {
+		needReload = true
+	}
+
+	if needReload {
+		if locked {
+			return s.daemonReloadNoLock()
+		} else {
+			return s.DaemonReload()
+		}
+	}
+	return nil
+}
+
 func (s *systemd) DaemonReexec() error {
 	if s.mode == GlobalUserMode {
 		panic("cannot call daemon-reexec with GlobalUserMode")
@@ -528,11 +570,12 @@ type UnitStatus struct {
 	Enabled  bool
 	Active   bool
 	// Installed is false if the queried unit doesn't exist.
-	Installed bool
+	Installed        bool
+	NeedDaemonReload bool
 }
 
 var baseProperties = []string{"Id", "ActiveState", "UnitFileState"}
-var extendedProperties = []string{"Id", "ActiveState", "UnitFileState", "Type"}
+var extendedProperties = []string{"Id", "ActiveState", "UnitFileState", "Type", "NeedDaemonReload"}
 var unitProperties = map[string][]string{
 	".timer":  baseProperties,
 	".socket": baseProperties,
@@ -609,6 +652,8 @@ func (s *systemd) getUnitStatus(properties []string, unitNames []string) ([]*Uni
 			// "static" means it can't be disabled
 			cur.Enabled = v == "enabled" || v == "static"
 			cur.Installed = v != ""
+		case "NeedDaemonReload":
+			cur.NeedDaemonReload = v == "yes"
 		default:
 			return nil, fmt.Errorf("cannot get unit status: unexpected field %q in ‘systemctl show’ output", k)
 		}
@@ -1184,9 +1229,9 @@ func (s *systemd) AddMountUnitFile(snapName, revision, what, where, fstype strin
 		return "", err
 	}
 
-	// we need to do a daemon-reload here to ensure that systemd really
+	// occasionally we need to do a daemon-reload here to ensure that systemd really
 	// knows about this new mount unit file
-	if err := s.daemonReloadNoLock(); err != nil {
+	if err := s.daemonReloadIfNeededWithLock(true, true, mountUnitName); err != nil {
 		return "", err
 	}
 
