@@ -148,6 +148,7 @@ func (s *vitalitySuite) testConfigureVitalityWithValidSnap(c *C, uc18 bool) {
 	c.Assert(err, IsNil)
 	svcName := "snap.test-snap.foo.service"
 	c.Check(s.systemctlArgs, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
 		{"daemon-reload"},
 		{"is-enabled", "snap.test-snap.foo.service"},
 		{"enable", "snap.test-snap.foo.service"},
@@ -182,7 +183,7 @@ func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroup(c *C) {
 		}
 
 		if cmd[0] == "show" {
-			return []byte("ActiveState=inactive\n"), nil
+			return []byte("ActiveState=inactive\nId=snap.test-snap.foo.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"), nil
 		}
 		return nil, nil
 	})
@@ -206,6 +207,66 @@ func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroup(c *C) {
 	c.Assert(err, IsNil)
 	svcName := "snap.test-snap.foo.service"
 	c.Check(s.systemctlArgs, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
+		{"is-enabled", "snap.test-snap.foo.service"},
+		{"enable", "snap.test-snap.foo.service"},
+		{"start", "snap.test-snap.foo.service"},
+	})
+	svcPath := filepath.Join(dirs.SnapServicesDir, svcName)
+	c.Check(svcPath, testutil.FileContains, "\nOOMScoreAdjust=-898\n")
+	c.Check(svcPath, testutil.FileContains, "\nSlice=snap.foogroup.slice\n")
+}
+
+func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroupDaemonReload(c *C) {
+	r := servicestate.MockSystemdVersion(248)
+	defer r()
+
+	si := &snap.SideInfo{RealName: "test-snap", Revision: snap.R(1)}
+	snaptest.MockSnap(c, mockSnapWithService, si)
+	s.state.Lock()
+	snapstate.Set(s.state, "test-snap", &snapstate.SnapState{
+		Sequence: []*snap.SideInfo{si},
+		Current:  snap.R(1),
+		Active:   true,
+		SnapType: "app",
+	})
+
+	// CreateQuota is calling "systemctl.Restart", which needs to be mocked
+	systemctlRestorer := systemd.MockSystemctl(func(cmd ...string) (buf []byte, err error) {
+		s.systemctlArgs = append(s.systemctlArgs, cmd)
+		if out := systemdtest.HandleMockAllUnitsActiveOutput(cmd, nil); out != nil {
+			return out, nil
+		}
+
+		if cmd[0] == "show" {
+			return []byte("ActiveState=inactive\nId=snap.test-snap.foo.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=yes\n"), nil
+		}
+		return nil, nil
+	})
+	s.AddCleanup(systemctlRestorer)
+	tr := config.NewTransaction(s.state)
+	tr.Set("core", "experimental.quota-groups", true)
+	tr.Commit()
+
+	// make a new quota group with this snap in it
+	err := servicestate.CreateQuota(s.state, "foogroup", "", []string{"test-snap"}, quantity.SizeMiB)
+	c.Assert(err, IsNil)
+
+	// CreateQuota uses systemctl, but we don't care about that here
+	s.systemctlArgs = nil
+
+	s.state.Unlock()
+
+	err = configcore.Run(&mockConf{
+		state: s.state,
+		changes: map[string]interface{}{
+			"resilience.vitality-hint": "unrelated,test-snap",
+		},
+	})
+	c.Assert(err, IsNil)
+	svcName := "snap.test-snap.foo.service"
+	c.Check(s.systemctlArgs, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
 		{"daemon-reload"},
 		{"is-enabled", "snap.test-snap.foo.service"},
 		{"enable", "snap.test-snap.foo.service"},
