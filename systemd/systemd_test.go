@@ -492,6 +492,30 @@ func (s *SystemdTestSuite) TestUnmaskUnderRoot(c *C) {
 	c.Check(s.argses, DeepEquals, [][]string{{"--root", "xyzzy", "unmask", "foo"}})
 }
 
+func (s *SystemdTestSuite) TestIsFailed(c *C) {
+	isFailed := New(SystemMode, s.rep).IsFailed("foo")
+	c.Assert(isFailed, Equals, true)
+	c.Check(s.argses, DeepEquals, [][]string{{"--root", "", "is-failed", "foo"}})
+}
+
+func (s *SystemdTestSuite) TestIsFailedUnderRoot(c *C) {
+	isFailed := NewUnderRoot("xyzzy", SystemMode, s.rep).IsFailed("foo")
+	c.Assert(isFailed, Equals, true)
+	c.Check(s.argses, DeepEquals, [][]string{{"--root", "xyzzy", "is-failed", "foo"}})
+}
+
+func (s *SystemdTestSuite) TestResetFailed(c *C) {
+	err := New(SystemMode, s.rep).ResetFailed("foo")
+	c.Assert(err, IsNil)
+	c.Check(s.argses, DeepEquals, [][]string{{"--root", "", "reset-failed", "foo"}})
+}
+
+func (s *SystemdTestSuite) TestResetFailedUnderRoot(c *C) {
+	err := NewUnderRoot("xyzzy", SystemMode, s.rep).ResetFailed("foo")
+	c.Assert(err, IsNil)
+	c.Check(s.argses, DeepEquals, [][]string{{"--root", "xyzzy", "reset-failed", "foo"}})
+}
+
 func (s *SystemdTestSuite) TestRestart(c *C) {
 	restore := MockStopDelays(time.Millisecond, 25*time.Second)
 	defer restore()
