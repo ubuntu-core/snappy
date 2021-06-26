@@ -472,6 +472,9 @@ func (s *systemd) DaemonReexec() error {
 }
 
 func (s *systemd) Enable(serviceNames ...string) error {
+	if 0 == len(serviceNames) {
+		return nil
+	}
 	var err error
 	if s.rootDir != "" {
 		_, err = s.systemctl(append([]string{"--root", s.rootDir, "enable"}, serviceNames...)...)
@@ -492,6 +495,9 @@ func (s *systemd) Unmask(serviceName string) error {
 }
 
 func (s *systemd) Disable(serviceNames ...string) error {
+	if 0 == len(serviceNames) {
+		return nil
+	}
 	var err error
 	if s.rootDir != "" {
 		_, err = s.systemctl(append([]string{"--root", s.rootDir, "disable"}, serviceNames...)...)

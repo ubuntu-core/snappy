@@ -203,15 +203,11 @@ func enableServices(apps []*snap.AppInfo, inter interacter) (disable func(), err
 			userEnabled = append(userEnabled, svcName)
 		}
 	}
-	if 0 < len(enabled) {
-		if e := systemSysd.Enable(enabled...); e != nil {
-			return nil, err
-		}
+	if e := systemSysd.Enable(enabled...); e != nil {
+		return nil, err
 	}
-	if 0 < len(userEnabled) {
-		if e := userSysd.Enable(userEnabled...); e != nil {
-			return nil, err
-		}
+	if e := userSysd.Enable(userEnabled...); e != nil {
+		return nil, err
 	}
 
 	return disableEnabledServices, nil
@@ -311,10 +307,8 @@ func StartServices(apps []*snap.AppInfo, disabledSvcs []string, flags *StartServ
 			if app.Timer != nil {
 				disableServices = append(disableServices, filepath.Base(app.Timer.File()))
 			}
-			if 0 < len(disableServices) {
-				if e := sysd.Disable(disableServices...); e != nil {
-					inter.Notify(fmt.Sprintf("While trying to disable previously enabled socket service %q: %v", disableServices, e))
-				}
+			if e := sysd.Disable(disableServices...); e != nil {
+				inter.Notify(fmt.Sprintf("While trying to disable previously enabled socket service %q: %v", disableServices, e))
 			}
 		}(app)
 
@@ -347,10 +341,8 @@ func StartServices(apps []*snap.AppInfo, disabledSvcs []string, flags *StartServ
 				userServices = append(userServices, timerService)
 			}
 		}
-		if 0 < len(enableServices) {
-			if err = sysd.Enable(enableServices...); err != nil {
-				return err
-			}
+		if err = sysd.Enable(enableServices...); err != nil {
+			return err
 		}
 		if 0 < len(systemServices) {
 			timings.Run(tm, "start-system-socket-service", fmt.Sprintf("start system socket service %q", systemServices), func(nested timings.Measurer) {
@@ -808,10 +800,8 @@ func StopServices(apps []*snap.AppInfo, flags *StopServicesFlags, reason snap.Se
 			sysd.Kill(app.ServiceName(), "KILL", "")
 		}
 	}
-	if 0 < len(disableServices) {
-		if err := sysd.Disable(disableServices...); err != nil {
-			return err
-		}
+	if err := sysd.Disable(disableServices...); err != nil {
+		return err
 	}
 	return nil
 }
@@ -936,17 +926,13 @@ func RemoveSnapServices(s *snap.Info, inter interacter) error {
 	}
 
 	// disable all collected systemd units
-	if 0 < len(systemUnits) {
-		if err := systemSysd.Disable(systemUnits...); err != nil {
-			return err
-		}
+	if err := systemSysd.Disable(systemUnits...); err != nil {
+		return err
 	}
 
 	// disable all collected user units
-	if 0 < len(userUnits) {
-		if err := userSysd.Disable(userUnits...); err != nil {
-			return err
-		}
+	if err := userSysd.Disable(userUnits...); err != nil {
+		return err
 	}
 
 	// remove unit filenames
