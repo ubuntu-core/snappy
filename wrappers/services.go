@@ -862,8 +862,8 @@ func RemoveQuotaGroup(grp *quota.Group, inter interacter) error {
 	}
 
 	if err == nil {
-		// we deleted the slice unit, so we need to daemon-reload
-		if err := systemSysd.DaemonReload(); err != nil {
+		// we deleted the slice unit, check if we need to daemon-reload
+		if err := systemSysd.DaemonReloadIfNeeded(false, grp.SliceFileName()); err != nil {
 			return err
 		}
 	}
