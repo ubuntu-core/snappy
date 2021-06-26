@@ -107,7 +107,12 @@ func (s *quotaHandlersSuite) TestDoQuotaControlUpdate(c *C) {
 		systemctlCallsForCreateQuota("foo-group", "test-snap"),
 
 		// doQuotaControl handler which updates the group
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo\\x2dgroup.slice"},
+				output:  "Id=snap.foo\\x2dgroup.slice\nActiveState=active\nUnitFileState=\nType=\nNeedDaemonReload=no\n",
+			},
+		},
 	))
 	defer r()
 
@@ -158,9 +163,19 @@ func (s *quotaHandlersSuite) TestDoQuotaControlRemove(c *C) {
 		systemctlCallsForCreateQuota("foo-group", "test-snap"),
 
 		// doQuotaControl handler which removes the group
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+				output:  "Id=snap.test-snap.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForSliceStop("foo-group"),
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo\\x2dgroup.slice"},
+				output:  "Id=snap.foo.slice\nActiveState=active\nUnitFileState=\nType=\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForServiceRestart("test-snap"),
 	))
 	defer r()
@@ -321,7 +336,12 @@ func (s *quotaHandlersSuite) TestDoCreateSubGroupQuota(c *C) {
 
 		// CreateQuota for foo2 - we don't write anything for the first quota
 		// since there are no snaps in the quota to track
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service", "snap.foo\\x2dgroup.slice", "snap.foo\\x2dgroup-foo2.slice"},
+				output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n\nId=snap.foo\\x2dgroup.slice\nActiveState=inactive\nUnitFileState=Type=\nNeedDaemonReload=no\n\nId=snap.foo\\x2dgroup-foo2.slice\nActiveState=inactive\nUnitFileState=Type=\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForSliceStart("foo-group"),
 		systemctlCallsForSliceStart("foo-group/foo2"),
 		systemctlCallsForServiceRestart("test-snap"),
@@ -419,9 +439,19 @@ func (s *quotaHandlersSuite) TestQuotaRemove(c *C) {
 		systemctlCallsForSliceStop("foo/foo2"),
 
 		// RemoveQuota for foo
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+				output:  "Id=snap.test-snap.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForSliceStop("foo"),
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo.slice"},
+				output:  "Id=snap.foo.slice\nActiveState=active\nUnitFileState=\nType=\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForServiceRestart("test-snap"),
 	))
 	defer r()
@@ -577,7 +607,12 @@ func (s *quotaHandlersSuite) TestQuotaUpdateSubGroupTooBig(c *C) {
 		systemctlCallsForCreateQuota("foo/foo2", "test-snap2"),
 
 		// UpdateQuota for foo2 - just the slice changes
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo-foo2.slice"},
+				output:  "Id=snap.foo-foo2.slice\nActiveState=active\nUnitFileState=\nType=\nNeedDaemonReload=no\n",
+			},
+		},
 
 		// UpdateQuota for foo2 which fails - no systemctl calls
 	))
@@ -700,7 +735,12 @@ func (s *quotaHandlersSuite) TestQuotaUpdateChangeMemLimit(c *C) {
 
 		// UpdateQuota for foo - an existing slice was changed, so all we need
 		// to is daemon-reload
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo.slice"},
+				output:  "Id=snap.foo.slice\nActiveState=active\nUnitFileState=\nType=\nNeedDaemonReload=no\n",
+			},
+		},
 	))
 	defer r()
 
@@ -765,7 +805,12 @@ func (s *quotaHandlersSuite) TestQuotaUpdateAddSnap(c *C) {
 
 		// UpdateQuota with just test-snap2 restarted since the group already
 		// exists
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap2.svc1.service"},
+				output:  "Id=snap.test-snap2.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForServiceRestart("test-snap2"),
 	))
 	defer r()

@@ -150,8 +150,8 @@ func systemctlCallsForServiceRestart(name string) []expectedSystemctl {
 	svc := "snap." + name + ".svc1.service"
 	return []expectedSystemctl{
 		{
-			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type", svc},
-			output:  fmt.Sprintf("Id=%s\nActiveState=active\nUnitFileState=enabled\nType=simple\n", svc),
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", svc},
+			output:  fmt.Sprintf("Id=%s\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n", svc),
 		},
 		{expArgs: []string{"stop", svc}},
 		{
@@ -163,8 +163,22 @@ func systemctlCallsForServiceRestart(name string) []expectedSystemctl {
 }
 
 func systemctlCallsForCreateQuota(groupName string, snapNames ...string) []expectedSystemctl {
+	var unitFiles []string
+	var response string
+	for _, u := range snapNames {
+		unitFiles = append(unitFiles, "snap."+u+".svc1.service")
+		response = response + fmt.Sprintf("Id=snap.%s.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n\n", u)
+	}
+	escapedGroupName := systemd.EscapeUnitNamePath(groupName)
+	unitFiles = append(unitFiles, "snap."+escapedGroupName+".slice")
+	response = response + fmt.Sprintf("Id=snap.%s.slice\nActiveState=inactive\nUnitFileState=Type=\nNeedDaemonReload=no\n", escapedGroupName)
 	calls := join(
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string(append([]string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload"}, unitFiles...)),
+				output:  response,
+			},
+		},
 		systemctlCallsForSliceStart(groupName),
 	)
 	for _, snapName := range snapNames {
@@ -253,12 +267,27 @@ func (s *quotaControlSuite) TestCreateUpdateRemoveQuotaHappy(c *C) {
 		systemctlCallsForCreateQuota("foo", "test-snap"),
 
 		// UpdateQuota for foo
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo.slice"},
+				output:  "Id=snap.foo.slice\nActiveState=active\nUnitFileState=\nType=\nNeedDaemonReload=no\n",
+			},
+		},
 
 		// RemoveQuota for foo
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+				output:  "Id=snap.test-snap.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForSliceStop("foo"),
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo.slice"},
+				output:  "Id=snap.foo.slice\nActiveState=inactive\nUnitFileState=\nType=\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForServiceRestart("test-snap"),
 	))
 	defer r()
@@ -307,7 +336,12 @@ func (s *quotaControlSuite) TestEnsureSnapAbsentFromQuotaGroup(c *C) {
 
 		// EnsureSnapAbsentFromQuota with just test-snap restarted since it is
 		// no longer in the group
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+				output:  "Id=snap.test-snap.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForServiceRestart("test-snap"),
 
 		// another identical call to EnsureSnapAbsentFromQuota does nothing
@@ -315,7 +349,12 @@ func (s *quotaControlSuite) TestEnsureSnapAbsentFromQuotaGroup(c *C) {
 
 		// EnsureSnapAbsentFromQuota with just test-snap2 restarted since it is no
 		// longer in the group
-		[]expectedSystemctl{{expArgs: []string{"daemon-reload"}}},
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap2.svc1.service"},
+				output:  "Id=snap.test-snap2.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			},
+		},
 		systemctlCallsForServiceRestart("test-snap2"),
 	))
 	defer r()
