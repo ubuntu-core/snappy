@@ -432,18 +432,18 @@ func (s *systemd) DaemonReloadIfNeeded(adding bool, serviceNames ...string) erro
 func (s *systemd) daemonReloadIfNeededWithLock(locked, adding bool, serviceNames ...string) error {
 	needReload := false
 	if s.smart {
-		for _, service := range serviceNames {
-			// A status error will happen if systemd thinks that the service does
-			// not exist anymore. We force the reload in that case, as we assume
-			// that the unit exists at this point.
-			status, err := s.Status(service)
-			if err != nil && adding {
-				needReload = true
-				continue
-			}
-
-			if err == nil && status[0].NeedDaemonReload {
-				needReload = true
+		// for _, service := range serviceNames {
+		// A status error will happen if systemd thinks that the service does
+		// not exist anymore. We force the reload in that case, as we assume
+		// that the unit exists at this point.
+		status, err := s.Status(serviceNames...)
+		if err != nil && adding {
+			needReload = true
+		}
+		// check if any unit needs reload
+		if err == nil {
+			for i := 0; i < len(status); i++ {
+				needReload = needReload || status[i].NeedDaemonReload
 			}
 		}
 	} else {
