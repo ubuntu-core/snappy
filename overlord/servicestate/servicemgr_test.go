@@ -24,6 +24,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "gopkg.in/check.v1"
@@ -138,7 +139,7 @@ func (s *baseServiceMgrTestSuite) SetUpTest(c *C) {
 
 type expectedSystemctl struct {
 	expArgs []string
-	output  string
+	output  []string
 	err     error
 }
 
@@ -226,11 +227,49 @@ func (s *baseServiceMgrTestSuite) mockSystemctlCalls(c *C, expCalls []expectedSy
 	allSystemctlCalls := [][]string{}
 	r := systemd.MockSystemctl(func(args ...string) ([]byte, error) {
 		systemctlCalls := len(allSystemctlCalls)
-		allSystemctlCalls = append(allSystemctlCalls, args)
 		if systemctlCalls < len(expCalls) {
 			res := expCalls[systemctlCalls]
-			c.Check(args, DeepEquals, res.expArgs)
-			return []byte(res.output), res.err
+			// if we have show command, unit order should not matter
+			var expectedArgs []string
+			var output []string
+			if args[0] == "show" && len(args) > 3 && len(args) == len(res.expArgs) {
+				// we have more than one unit, reorder expected reply array
+				// as unit order should not be dictated for show command
+				expectedArgs = append(expectedArgs, args[0], args[1])
+				i := 2
+				// handle InactiveEnterTimestamp case, which is passed as extra element in array
+				if args[2] == "InactiveEnterTimestamp" {
+					expectedArgs = append(expectedArgs, args[2])
+					i++
+				}
+				offset := i
+				for ; i < len(args); i++ {
+					// take passed args as order to obey for the reply string
+					for ii := offset; ii < len(res.expArgs); ii++ {
+						if args[i] == res.expArgs[ii] {
+							expectedArgs = append(expectedArgs, res.expArgs[ii])
+							if ii-offset < len(res.output) {
+								output = append(output, res.output[ii-offset])
+							}
+							continue
+						}
+					}
+				}
+			} else {
+				expectedArgs = res.expArgs
+				output = res.output
+			}
+			c.Assert(args, DeepEquals, expectedArgs)
+			// use expected order for final confirmation, we just validated this step
+			allSystemctlCalls = append(allSystemctlCalls, res.expArgs)
+			// join output strings, add empty line in between for "show" command
+			if args[0] == "show" {
+				return []byte(strings.Join(output[:], "\n")), res.err
+			} else {
+				return []byte(strings.Join(output[:], "")), res.err
+			}
+		} else {
+			allSystemctlCalls = append(allSystemctlCalls, args)
 		}
 		c.Errorf("unexpected and unhandled systemctl command: %+v", args)
 		return nil, fmt.Errorf("broken test")
@@ -301,7 +340,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleWritesServicesFiles
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 	})
@@ -375,7 +414,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC18(c
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		{
 			expArgs: []string{"daemon-reload"},
@@ -416,7 +455,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC18Da
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 	})
@@ -461,7 +500,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitali
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		{
 			expArgs: []string{"daemon-reload"},
@@ -509,7 +548,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitali
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 	})
@@ -593,7 +632,7 @@ echo %[1]q
 	r = s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		{
 			expArgs: []string{"daemon-reload"},
@@ -668,14 +707,14 @@ exit 1
 	r = s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 		{
 			// usr-lib-snapd.mount has never been stopped though so we skip out
 			// anyways
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  "InactiveEnterTimestamp=",
+			output:  []string{"InactiveEnterTimestamp="},
 		},
 	})
 	defer r()
@@ -737,7 +776,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRes
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		{
 			expArgs: []string{"daemon-reload"},
@@ -745,18 +784,18 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRes
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future (hence before the usr-lib-snapd.mount unit was stopped and
 			// after usr-lib-snapd.mount file was modified)
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
 		{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
 		{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
@@ -821,25 +860,25 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesButDoe
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future (hence before the usr-lib-snapd.mount unit was stopped and
 			// after usr-lib-snapd.mount file was modified)
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
 		// the service is disabled
 		{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "disabled",
+			output:  []string{"disabled"},
 			err:     systemctlDisabledServiceError{},
 		},
 		// then we don't restart the service even though it was killed
@@ -897,7 +936,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKil
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		{
 			expArgs: []string{"daemon-reload"},
@@ -905,13 +944,13 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKil
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped before that, so it isn't
 			// restarted
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", thePast),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", thePast)},
 		},
 	})
 	defer r()
@@ -967,18 +1006,18 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKil
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nType=simple\nActiveState=inactive\nUnitFileState=enabled\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nType=simple\nActiveState=inactive\nUnitFileState=enabled\nNeedDaemonReload=no\n"},
 		},
 		{
 			// usr-lib-snapd.mount was stopped in the past
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", thePast),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", thePast)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped after that, so it isn't
 			// restarted
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
 	})
 	defer r()
@@ -1048,23 +1087,23 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "ActiveState=inactive\nId=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"ActiveState=inactive\nId=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str)},
 		},
 		{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
 		{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
@@ -1137,23 +1176,23 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str)},
 		},
 		{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
 		{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
@@ -1212,7 +1251,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		{
 			expArgs: []string{"daemon-reload"},
@@ -1220,17 +1259,17 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
 		{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
 		{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
@@ -1329,14 +1368,14 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesWhe
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 		{
 			// usr-lib-snapd.mount has never been stopped this boot, thus has
 			// always been active
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  "InactiveEnterTimestamp=",
+			output:  []string{"InactiveEnterTimestamp="},
 		},
 	})
 	defer r()
@@ -1391,24 +1430,24 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRes
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future (hence before the usr-lib-snapd.mount unit was stopped and
 			// after usr-lib-snapd.mount file was modified)
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
 		{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
 		{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
@@ -1472,20 +1511,20 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndTri
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
 			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-			output:  "Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n",
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 		},
 		// ActiveState=inactive was passed, daemon-reload is not needed
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future (hence before the usr-lib-snapd.mount unit was stopped and
 			// after usr-lib-snapd.mount file was modified)
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
 		{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
