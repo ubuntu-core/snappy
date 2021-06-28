@@ -359,7 +359,7 @@ func StartServices(apps []*snap.AppInfo, disabledSvcs []string, flags *StartServ
 		}
 	}
 
-	// based on systemd version this is correctly handled in single transation
+	// based on systemd version this is correctly handled in single transition
 	for _, srv := range systemServices {
 		// starting all services at once does not create a single
 		// transaction, but instead spawns multiple jobs, make sure the
