@@ -596,6 +596,40 @@ func (s *servicectlSuite) TestTwoServices(c *C) {
 Type=simple
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
+`, args[2])), nil
+		case "--user":
+			c.Check(args[1], Equals, "--global")
+			c.Check(args[2], Equals, "is-enabled")
+			return []byte("enabled\n"), nil
+		default:
+			c.Errorf("unexpected systemctl command: %v", args)
+			return nil, fmt.Errorf("should not be reached")
+		}
+	})
+	defer restore()
+
+	stdout, stderr, err := ctlcmd.Run(s.mockContext, []string{"services"}, 0)
+	c.Assert(err, IsNil)
+	c.Check(string(stdout), Equals, `
+Service                    Startup  Current  Notes
+test-snap.another-service  enabled  active   -
+test-snap.test-service     enabled  active   -
+test-snap.user-service     enabled  -        user
+`[1:])
+	c.Check(string(stderr), Equals, "")
+}
+
+func (s *servicectlSuite) TestTwoServicesReload(c *C) {
+	restore := systemd.MockSystemctl(func(args ...string) (buf []byte, err error) {
+		switch args[0] {
+		case "show":
+			c.Check(args[2], Matches, `snap\.test-snap\.\w+-service\.service`)
+			return []byte(fmt.Sprintf(`Id=%s
+Type=simple
+ActiveState=active
+UnitFileState=enabled
+NeedDaemonReload=yes
 `, args[2])), nil
 		case "--user":
 			c.Check(args[1], Equals, "--global")
@@ -627,6 +661,29 @@ func (s *servicectlSuite) TestServices(c *C) {
 Type=simple
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
+`), nil
+	})
+	defer restore()
+
+	stdout, stderr, err := ctlcmd.Run(s.mockContext, []string{"services", "test-snap.test-service"}, 0)
+	c.Assert(err, IsNil)
+	c.Check(string(stdout), Equals, `
+Service                 Startup  Current  Notes
+test-snap.test-service  enabled  active   -
+`[1:])
+	c.Check(string(stderr), Equals, "")
+}
+
+func (s *servicectlSuite) TestServicesReload(c *C) {
+	restore := systemd.MockSystemctl(func(args ...string) (buf []byte, err error) {
+		c.Assert(args[0], Equals, "show")
+		c.Check(args[2], Equals, "snap.test-snap.test-service.service")
+		return []byte(`Id=snap.test-snap.test-service.service
+Type=simple
+ActiveState=active
+UnitFileState=enabled
+NeedDaemonReload=yes
 `), nil
 	})
 	defer restore()
