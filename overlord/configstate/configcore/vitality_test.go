@@ -183,7 +183,7 @@ func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroup(c *C) {
 		}
 
 		if cmd[0] == "show" {
-			return []byte("ActiveState=inactive\nId=snap.test-snap.foo.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"), nil
+			return []byte("ActiveState=inactive\nId=snap.test-snap.foo.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n\nActiveState=inactive\nId=snap.foogroup.slice\nUnitFileState=\nType=\nNeedDaemonReload=no\n"), nil
 		}
 		return nil, nil
 	})
@@ -207,7 +207,7 @@ func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroup(c *C) {
 	c.Assert(err, IsNil)
 	svcName := "snap.test-snap.foo.service"
 	c.Check(s.systemctlArgs, DeepEquals, [][]string{
-		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service", "snap.foogroup.slice"},
 		{"is-enabled", "snap.test-snap.foo.service"},
 		{"enable", "snap.test-snap.foo.service"},
 		{"start", "snap.test-snap.foo.service"},
@@ -257,7 +257,7 @@ func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroupDaemonReload(c *C) {
 
 	s.state.Unlock()
 
-	err = configcore.Run(&mockConf{
+	err = configcore.Run(classicDev, &mockConf{
 		state: s.state,
 		changes: map[string]interface{}{
 			"resilience.vitality-hint": "unrelated,test-snap",
