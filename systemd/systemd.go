@@ -214,7 +214,7 @@ type Systemd interface {
 	// DaemonReload reloads systemd's configuration.
 	DaemonReload() error
 	// DaemonReload reloads systemd's configuration if required
-	// adding flag is services are added(true) or removed(false), serviceNames list of services
+	// adding flag if services are added(true) or removed(false), serviceNames list of services
 	DaemonReloadIfNeeded(adding bool, serviceNames ...string) error
 	// DaemonRexec reexecutes systemd's system manager, should be
 	// only necessary to apply manager's configuration like
