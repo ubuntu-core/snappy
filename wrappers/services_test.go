@@ -38,6 +38,7 @@ import (
 	_ "github.com/snapcore/snapd/interfaces/builtin"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/progress"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/quota"
 	"github.com/snapcore/snapd/snap/snaptest"
@@ -3240,7 +3241,7 @@ apps:
 	}
 }
 
-func (s *servicesTestSuite) TestSnapServicesActivation(c *C) {
+func (s *servicesTestSuite) testSnapServicesActivation(c *C) {
 	const snapYaml = `name: hello-snap
 version: 1.10
 summary: hello
@@ -3294,6 +3295,26 @@ apps:
 		{"start", svc2Timer},
 		{"start", svc3Name},
 	}, Commentf("calls: %v", s.sysdLog))
+}
+
+func (s *servicesTestSuite) TestSnapServicesActivationOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testSnapServicesActivation(c)
+}
+
+func (s *servicesTestSuite) TestSnapServicesActivationSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testSnapServicesActivation(c)
 }
 
 func (s *servicesTestSuite) TestServiceRestartDelay(c *C) {
