@@ -31,6 +31,7 @@ import (
 	"github.com/snapcore/snapd/overlord/servicestate"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/state"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/snaptest"
 	"github.com/snapcore/snapd/snapdenv"
@@ -162,25 +163,36 @@ func systemctlCallsForServiceRestart(name string) []expectedSystemctl {
 	}
 }
 
-func systemctlCallsForCreateQuota(groupName string, snapNames ...string) []expectedSystemctl {
-	var unitFiles []string
-	var response []string
-	for _, u := range snapNames {
-		unitFiles = append(unitFiles, "snap."+u+".svc1.service")
-		response = append(response, fmt.Sprintf("Id=snap.%s.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n", u))
-	}
-	escapedGroupName := systemd.EscapeUnitNamePath(groupName)
-	unitFiles = append(unitFiles, "snap."+escapedGroupName+".slice")
-	response = append(response, fmt.Sprintf("Id=snap.%s.slice\nActiveState=inactive\nUnitFileState=Type=\nNeedDaemonReload=no\n", escapedGroupName))
-	calls := join(
-		[]expectedSystemctl{
-			{
-				expArgs: []string(append([]string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload"}, unitFiles...)),
-				output:  response,
+func systemctlCallsForCreateQuota(smartSystemd bool, groupName string, snapNames ...string) []expectedSystemctl {
+	var calls []expectedSystemctl
+	if !smartSystemd {
+		calls = join(
+			[]expectedSystemctl{
+				{
+					expArgs: []string{"daemon-reload"},
+				},
 			},
-		},
-		systemctlCallsForSliceStart(groupName),
-	)
+		)
+	} else {
+		var unitFiles []string
+		var response []string
+		for _, u := range snapNames {
+			unitFiles = append(unitFiles, "snap."+u+".svc1.service")
+			response = append(response, fmt.Sprintf("Id=snap.%s.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n", u))
+		}
+		escapedGroupName := systemd.EscapeUnitNamePath(groupName)
+		unitFiles = append(unitFiles, "snap."+escapedGroupName+".slice")
+		response = append(response, fmt.Sprintf("Id=snap.%s.slice\nActiveState=inactive\nUnitFileState=Type=\nNeedDaemonReload=no\n", escapedGroupName))
+		calls = join(calls,
+			[]expectedSystemctl{
+				{
+					expArgs: []string(append([]string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload"}, unitFiles...)),
+					output:  response,
+				},
+			},
+		)
+	}
+	calls = join(calls, systemctlCallsForSliceStart(groupName))
 	for _, snapName := range snapNames {
 		calls = join(calls, systemctlCallsForServiceRestart(snapName))
 	}
@@ -261,37 +273,7 @@ func (s *quotaControlSuite) TestRemoveQuotaPreseeding(c *C) {
 	c.Assert(err, ErrorMatches, `removing quota groups not supported while preseeding`)
 }
 
-func (s *quotaControlSuite) TestCreateUpdateRemoveQuotaHappy(c *C) {
-	r := s.mockSystemctlCalls(c, join(
-		// CreateQuota for foo - success
-		systemctlCallsForCreateQuota("foo", "test-snap"),
-
-		// UpdateQuota for foo
-		[]expectedSystemctl{
-			{
-				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo.slice"},
-				output:  []string{"Id=snap.foo.slice\nActiveState=active\nUnitFileState=\nType=\nNeedDaemonReload=no\n"},
-			},
-		},
-
-		// RemoveQuota for foo
-		[]expectedSystemctl{
-			{
-				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
-				output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
-			},
-		},
-		systemctlCallsForSliceStop("foo"),
-		[]expectedSystemctl{
-			{
-				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo.slice"},
-				output:  []string{"Id=snap.foo.slice\nActiveState=inactive\nUnitFileState=\nType=\nNeedDaemonReload=no\n"},
-			},
-		},
-		systemctlCallsForServiceRestart("test-snap"),
-	))
-	defer r()
-
+func (s *quotaControlSuite) testCreateUpdateRemoveQuotaHappy(c *C) {
 	st := s.state
 	st.Lock()
 	defer st.Unlock()
@@ -329,36 +311,84 @@ func (s *quotaControlSuite) TestCreateUpdateRemoveQuotaHappy(c *C) {
 	checkQuotaState(c, st, nil)
 }
 
-func (s *quotaControlSuite) TestEnsureSnapAbsentFromQuotaGroup(c *C) {
-	r := s.mockSystemctlCalls(c, join(
-		// CreateQuota for foo
-		systemctlCallsForCreateQuota("foo", "test-snap", "test-snap2"),
+func (s *quotaControlSuite) TestCreateUpdateRemoveQuotaHappyOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
 
-		// EnsureSnapAbsentFromQuota with just test-snap restarted since it is
-		// no longer in the group
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	r := s.mockSystemctlCalls(c, join(
+		// CreateQuota for foo - success
+		systemctlCallsForCreateQuota(false, "foo", "test-snap"),
+
+		// UpdateQuota for foo
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"daemon-reload"},
+			},
+		},
+
+		// RemoveQuota for foo
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"daemon-reload"},
+			},
+		},
+		systemctlCallsForSliceStop("foo"),
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"daemon-reload"},
+			},
+		},
+		systemctlCallsForServiceRestart("test-snap"),
+	))
+	defer r()
+
+	s.testCreateUpdateRemoveQuotaHappy(c)
+}
+
+func (s *quotaControlSuite) TestCreateUpdateRemoveQuotaHappySmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	r := s.mockSystemctlCalls(c, join(
+		// CreateQuota for foo - success
+		systemctlCallsForCreateQuota(true, "foo", "test-snap"),
+
+		// UpdateQuota for foo
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo.slice"},
+				output:  []string{"Id=snap.foo.slice\nActiveState=active\nUnitFileState=\nType=\nNeedDaemonReload=no\n"},
+			},
+		},
+
+		// RemoveQuota for foo
 		[]expectedSystemctl{
 			{
 				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
 				output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
 			},
 		},
-		systemctlCallsForServiceRestart("test-snap"),
-
-		// another identical call to EnsureSnapAbsentFromQuota does nothing
-		// since the function is idempotent
-
-		// EnsureSnapAbsentFromQuota with just test-snap2 restarted since it is no
-		// longer in the group
+		systemctlCallsForSliceStop("foo"),
 		[]expectedSystemctl{
 			{
-				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap2.svc1.service"},
-				output:  []string{"Id=snap.test-snap2.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.foo.slice"},
+				output:  []string{"Id=snap.foo.slice\nActiveState=inactive\nUnitFileState=\nType=\nNeedDaemonReload=no\n"},
 			},
 		},
-		systemctlCallsForServiceRestart("test-snap2"),
+		systemctlCallsForServiceRestart("test-snap"),
 	))
 	defer r()
 
+	s.testCreateUpdateRemoveQuotaHappy(c)
+}
+
+func (s *quotaControlSuite) testEnsureSnapAbsentFromQuotaGroup(c *C) {
 	st := s.state
 	st.Lock()
 	defer st.Unlock()
@@ -417,4 +447,80 @@ func (s *quotaControlSuite) TestEnsureSnapAbsentFromQuotaGroup(c *C) {
 	// is not in any quota group
 	err = servicestate.EnsureSnapAbsentFromQuota(s.state, "test-snap33333")
 	c.Assert(err, IsNil)
+}
+
+func (s *quotaControlSuite) TestEnsureSnapAbsentFromQuotaGroupOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	r := s.mockSystemctlCalls(c, join(
+		// CreateQuota for foo
+		systemctlCallsForCreateQuota(false, "foo", "test-snap", "test-snap2"),
+
+		// EnsureSnapAbsentFromQuota with just test-snap restarted since it is
+		// no longer in the group
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"daemon-reload"},
+			},
+		},
+		systemctlCallsForServiceRestart("test-snap"),
+
+		// another identical call to EnsureSnapAbsentFromQuota does nothing
+		// since the function is idempotent
+
+		// EnsureSnapAbsentFromQuota with just test-snap2 restarted since it is no
+		// longer in the group
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"daemon-reload"},
+			},
+		},
+		systemctlCallsForServiceRestart("test-snap2"),
+	))
+	defer r()
+
+	s.testEnsureSnapAbsentFromQuotaGroup(c)
+}
+
+func (s *quotaControlSuite) TestEnsureSnapAbsentFromQuotaGroupSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	r := s.mockSystemctlCalls(c, join(
+		// CreateQuota for foo
+		systemctlCallsForCreateQuota(true, "foo", "test-snap", "test-snap2"),
+
+		// EnsureSnapAbsentFromQuota with just test-snap restarted since it is
+		// no longer in the group
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+				output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+			},
+		},
+		systemctlCallsForServiceRestart("test-snap"),
+
+		// another identical call to EnsureSnapAbsentFromQuota does nothing
+		// since the function is idempotent
+
+		// EnsureSnapAbsentFromQuota with just test-snap2 restarted since it is no
+		// longer in the group
+		[]expectedSystemctl{
+			{
+				expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap2.svc1.service"},
+				output:  []string{"Id=snap.test-snap2.svc1.service\nActiveState=active\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+			},
+		},
+		systemctlCallsForServiceRestart("test-snap2"),
+	))
+	defer r()
+
+	s.testEnsureSnapAbsentFromQuotaGroup(c)
 }

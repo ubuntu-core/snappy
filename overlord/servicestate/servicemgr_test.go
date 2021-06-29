@@ -259,7 +259,7 @@ func (s *baseServiceMgrTestSuite) mockSystemctlCalls(c *C, expCalls []expectedSy
 				expectedArgs = res.expArgs
 				output = res.output
 			}
-			c.Assert(args, DeepEquals, expectedArgs)
+			c.Check(args, DeepEquals, expectedArgs)
 			// use expected order for final confirmation, we just validated this step
 			allSystemctlCalls = append(allSystemctlCalls, res.expArgs)
 			// join output strings, add empty line in between for "show" command
