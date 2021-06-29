@@ -37,6 +37,7 @@ import (
 	"github.com/snapcore/snapd/gadget/quantity"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/osutil/squashfs"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/sandbox/selinux"
 	. "github.com/snapcore/snapd/systemd"
 	"github.com/snapcore/snapd/testutil"
@@ -787,7 +788,7 @@ func makeMockFile(c *C, path string) {
 	c.Assert(err, IsNil)
 }
 
-func (s *SystemdTestSuite) TestAddMountUnit(c *C) {
+func (s *SystemdTestSuite) testAddMountUnit(c *C, assertStrings [][]string) {
 	rootDir := dirs.GlobalRootDir
 
 	restore := squashfs.MockNeedsFuse(false)
@@ -816,16 +817,36 @@ LazyUnmount=yes
 [Install]
 WantedBy=multi-user.target
 `[1:], mockSnapPath))
-
-	c.Assert(s.argses, DeepEquals, [][]string{
-		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-snapname-123.mount"},
-		{"daemon-reload"},
-		{"--root", rootDir, "enable", "snap-snapname-123.mount"},
-		{"start", "snap-snapname-123.mount"},
-	})
+	assertStrings = append(assertStrings, []string{"--root", rootDir, "enable", "snap-snapname-123.mount"})
+	assertStrings = append(assertStrings, []string{"start", "snap-snapname-123.mount"})
+	c.Assert(s.argses, DeepEquals, assertStrings)
 }
 
-func (s *SystemdTestSuite) TestAddMountUnitForDirs(c *C) {
+func (s *SystemdTestSuite) TestAddMountUnitOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testAddMountUnit(c, [][]string{{"daemon-reload"}})
+}
+
+func (s *SystemdTestSuite) TestAddMountUnitSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testAddMountUnit(c, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-snapname-123.mount"},
+		{"daemon-reload"},
+	},
+	)
+}
+
+func (s *SystemdTestSuite) testAddMountUnitForDirs(c *C, assertStrings [][]string) {
 	restore := squashfs.MockNeedsFuse(false)
 	defer restore()
 
@@ -852,11 +873,33 @@ LazyUnmount=yes
 WantedBy=multi-user.target
 `[1:], snapDir))
 
-	c.Assert(s.argses, DeepEquals, [][]string{
+	assertStrings = append(assertStrings, []string{"enable", "snap-snapname-x1.mount"})
+	assertStrings = append(assertStrings, []string{"start", "snap-snapname-x1.mount"})
+	c.Check(s.argses, DeepEquals, assertStrings)
+}
+
+func (s *SystemdTestSuite) TestAddMountUnitForDirsOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testAddMountUnitForDirs(c, [][]string{{"daemon-reload"}})
+}
+
+func (s *SystemdTestSuite) TestAddMountUnitForDirsSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+	restore := squashfs.MockNeedsFuse(false)
+	defer restore()
+
+	s.testAddMountUnitForDirs(c, [][]string{
 		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-snapname-x1.mount"},
 		{"daemon-reload"},
-		{"enable", "snap-snapname-x1.mount"},
-		{"start", "snap-snapname-x1.mount"},
 	})
 }
 
@@ -1083,7 +1126,7 @@ func makeMockMountUnit(c *C, mountDir string) string {
 }
 
 // FIXME: also test for the "IsMounted" case
-func (s *SystemdTestSuite) TestRemoveMountUnit(c *C) {
+func (s *SystemdTestSuite) testRemoveMountUnit(c *C, assertStrings []string) {
 	rootDir := dirs.GlobalRootDir
 
 	restore := osutil.MockMountInfo("")
@@ -1101,8 +1144,27 @@ func (s *SystemdTestSuite) TestRemoveMountUnit(c *C) {
 		{"--root", rootDir, "disable", "snap-foo-42.mount"},
 		{"--root", rootDir, "is-failed", "snap-foo-42.mount"},
 		{"--root", rootDir, "reset-failed", "snap-foo-42.mount"},
-		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-foo-42.mount"},
+		assertStrings,
 	})
+}
+func (s *SystemdTestSuite) TestRemoveMountUnitOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testRemoveMountUnit(c, []string{"daemon-reload"})
+}
+
+func (s *SystemdTestSuite) TestRemoveMountUnitSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testRemoveMountUnit(c, []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-foo-42.mount"})
 }
 
 func (s *SystemdTestSuite) TestDaemonReloadMutex(c *C) {
