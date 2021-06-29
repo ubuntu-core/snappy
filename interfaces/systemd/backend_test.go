@@ -29,6 +29,7 @@ import (
 	"github.com/snapcore/snapd/interfaces"
 	"github.com/snapcore/snapd/interfaces/ifacetest"
 	"github.com/snapcore/snapd/interfaces/systemd"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
 	sysd "github.com/snapcore/snapd/systemd"
 )
@@ -99,7 +100,41 @@ func (s *backendSuite) TestInstallingSnapWritesStartsServices(c *C) {
 	})
 }
 
-func (s *backendSuite) TestRemovingSnapRemovesAndStopsServices(c *C) {
+func (s *backendSuite) TestRemovingSnapRemovesAndStopsServicesOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.Iface.SystemdPermanentSlotCallback = func(spec *systemd.Specification, slot *snap.SlotInfo) error {
+		return spec.AddService("snap.samba.interface.foo.service", &systemd.Service{ExecStart: "/bin/true"})
+	}
+	for _, opts := range testedConfinementOpts {
+		snapInfo := s.InstallSnap(c, opts, "", ifacetest.SambaYamlV1, 1)
+		s.systemctlArgs = nil
+		s.RemoveSnap(c, snapInfo)
+		service := filepath.Join(dirs.SnapServicesDir, "snap.samba.interface.foo.service")
+		// the service file was removed
+		_, err := os.Stat(service)
+		c.Check(os.IsNotExist(err), Equals, true)
+		// the service was stopped
+		c.Check(s.systemctlArgs, DeepEquals, [][]string{
+			{"systemctl", "disable", "snap.samba.interface.foo.service"},
+			{"systemctl", "stop", "snap.samba.interface.foo.service"},
+			{"systemctl", "show", "--property=ActiveState", "snap.samba.interface.foo.service"},
+			{"systemctl", "daemon-reload"},
+		})
+	}
+}
+
+func (s *backendSuite) TestRemovingSnapRemovesAndStopsServicesSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
 	s.Iface.SystemdPermanentSlotCallback = func(spec *systemd.Specification, slot *snap.SlotInfo) error {
 		return spec.AddService("snap.samba.interface.foo.service", &systemd.Service{ExecStart: "/bin/true"})
 	}
@@ -121,7 +156,52 @@ func (s *backendSuite) TestRemovingSnapRemovesAndStopsServices(c *C) {
 	}
 }
 
-func (s *backendSuite) TestSettingUpSecurityWithFewerServices(c *C) {
+func (s *backendSuite) TestSettingUpSecurityWithFewerServicesOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.Iface.SystemdPermanentSlotCallback = func(spec *systemd.Specification, slot *snap.SlotInfo) error {
+		err := spec.AddService("snap.samba.interface.foo.service", &systemd.Service{ExecStart: "/bin/true"})
+		if err != nil {
+			return err
+		}
+		return spec.AddService("snap.samba.interface.bar.service", &systemd.Service{ExecStart: "/bin/false"})
+	}
+	snapInfo := s.InstallSnap(c, interfaces.ConfinementOptions{}, "", ifacetest.SambaYamlV1, 1)
+	s.systemctlArgs = nil
+	serviceFoo := filepath.Join(dirs.SnapServicesDir, "snap.samba.interface.foo.service")
+	serviceBar := filepath.Join(dirs.SnapServicesDir, "snap.samba.interface.bar.service")
+	// the services were created
+	_, err := os.Stat(serviceFoo)
+	c.Check(err, IsNil)
+	_, err = os.Stat(serviceBar)
+	c.Check(err, IsNil)
+
+	// Change what the interface returns to simulate some useful change
+	s.Iface.SystemdPermanentSlotCallback = func(spec *systemd.Specification, slot *snap.SlotInfo) error {
+		return spec.AddService("snap.samba.interface.foo.service", &systemd.Service{ExecStart: "/bin/true"})
+	}
+	// Update over to the same snap to regenerate security
+	s.UpdateSnap(c, snapInfo, interfaces.ConfinementOptions{}, ifacetest.SambaYamlV1, 0)
+	// The bar service should have been stopped
+	c.Check(s.systemctlArgs, DeepEquals, [][]string{
+		{"systemctl", "disable", "snap.samba.interface.bar.service"},
+		{"systemctl", "stop", "snap.samba.interface.bar.service"},
+		{"systemctl", "show", "--property=ActiveState", "snap.samba.interface.bar.service"},
+		{"systemctl", "daemon-reload"},
+	})
+}
+
+func (s *backendSuite) TestSettingUpSecurityWithFewerServicesSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
 	s.Iface.SystemdPermanentSlotCallback = func(spec *systemd.Specification, slot *snap.SlotInfo) error {
 		err := spec.AddService("snap.samba.interface.foo.service", &systemd.Service{ExecStart: "/bin/true"})
 		if err != nil {
