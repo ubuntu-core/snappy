@@ -38,6 +38,7 @@ import (
 	_ "github.com/snapcore/snapd/interfaces/builtin"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/progress"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/quota"
 	"github.com/snapcore/snapd/snap/snaptest"
@@ -3176,9 +3177,8 @@ func (s *servicesTestSuite) TestFailedAddSnapCleansUp(c *C) {
 
 	calls := 0
 	r := systemd.MockSystemctl(func(cmd ...string) ([]byte, error) {
-		if len(cmd) == 1 && cmd[0] == "daemon-reload" && calls == 0 {
-			// only fail the first systemd daemon-reload call, the
-			// second one is at the end of cleanup
+		if calls == 0 {
+			// Fail first systemctl call
 			calls += 1
 			return nil, fmt.Errorf("failed")
 		}
@@ -3241,7 +3241,7 @@ apps:
 	}
 }
 
-func (s *servicesTestSuite) TestSnapServicesActivation(c *C) {
+func (s *servicesTestSuite) testSnapServicesActivation(c *C) {
 	const snapYaml = `name: hello-snap
 version: 1.10
 summary: hello
@@ -3272,8 +3272,12 @@ apps:
 	// fix the apps order to make the test stable
 	err := wrappers.AddSnapServices(info, nil, progress.Null)
 	c.Assert(err, IsNil)
+	c.Assert(s.sysdLog, HasLen, 3, Commentf("len: %v calls: %v", len(s.sysdLog), s.sysdLog))
+	// TODO check independently of position
 	c.Check(s.sysdLog, DeepEquals, [][]string{
-		{"daemon-reload"},
+		// only svc3 gets started during boot
+		{"--root", dirs.GlobalRootDir, "enable", svc3Name},
+		{"show", "--property=Id,Type,ActiveState,UnitFileState,NeedDaemonReload", svc3Name},
 	})
 	s.sysdLog = nil
 
@@ -3291,6 +3295,26 @@ apps:
 		{"start", svc2Timer},
 		{"start", svc3Name},
 	}, Commentf("calls: %v", s.sysdLog))
+}
+
+func (s *servicesTestSuite) TestSnapServicesActivationOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testSnapServicesActivation(c)
+}
+
+func (s *servicesTestSuite) TestSnapServicesActivationSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testSnapServicesActivation(c)
 }
 
 func (s *servicesTestSuite) TestServiceRestartDelay(c *C) {

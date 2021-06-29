@@ -45,17 +45,21 @@ func (s *emulation) DaemonReload() error {
 	return errNotImplemented
 }
 
+func (s *emulation) DaemonReloadIfNeeded(adding bool, serviceNames ...string) error {
+	return errNotImplemented
+}
+
 func (s *emulation) DaemonReexec() error {
 	return errNotImplemented
 }
 
-func (s *emulation) Enable(service string) error {
-	_, err := systemctlCmd("--root", s.rootDir, "enable", service)
+func (s *emulation) Enable(service ...string) error {
+	_, err := systemctlCmd(append([]string{"--root", s.rootDir, "enable"}, service...)...)
 	return err
 }
 
-func (s *emulation) Disable(service string) error {
-	_, err := systemctlCmd("--root", s.rootDir, "disable", service)
+func (s *emulation) Disable(service ...string) error {
+	_, err := systemctlCmd(append([]string{"--root", s.rootDir, "disable"}, service...)...)
 	return err
 }
 
@@ -67,7 +71,7 @@ func (s *emulation) StartNoBlock(service ...string) error {
 	return errNotImplemented
 }
 
-func (s *emulation) Stop(service string, timeout time.Duration) error {
+func (s *emulation) Stop(timeout time.Duration, service ...string) error {
 	return errNotImplemented
 }
 
@@ -75,7 +79,7 @@ func (s *emulation) Kill(service, signal, who string) error {
 	return errNotImplemented
 }
 
-func (s *emulation) Restart(service string, timeout time.Duration) error {
+func (s *emulation) Restart(timeout time.Duration, service ...string) error {
 	return errNotImplemented
 }
 
@@ -195,5 +199,17 @@ func (s *emulation) Mount(what, where string, options ...string) error {
 }
 
 func (s *emulation) Umount(whatOrWhere string) error {
+	return errNotImplemented
+}
+
+func (s *emulation) IsFailed(serviceNames ...string) bool {
+	return false
+}
+
+func (s *emulation) ResetFailed(serviceNames ...string) error {
+	return errNotImplemented
+}
+
+func (s *emulation) ResetFailedIfNeeded(serviceNames ...string) error {
 	return errNotImplemented
 }

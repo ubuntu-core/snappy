@@ -36,6 +36,7 @@ import (
 	"github.com/snapcore/snapd/overlord/servicestate/servicestatetest"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/snapstate/snapstatetest"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/snaptest"
 	"github.com/snapcore/snapd/systemd"
@@ -106,7 +107,7 @@ apps:
   daemon: simple
 `
 
-func (s *vitalitySuite) TestConfigureVitalityWithValidSnapUC16(c *C) {
+func (s *vitalitySuite) testConfigureVitalityWithValidSnapUC16(c *C, assertStrings [][]string) {
 	uc16model := assertstest.FakeAssertion(map[string]interface{}{
 		"type":         "model",
 		"authority-id": "canonical",
@@ -120,14 +121,58 @@ func (s *vitalitySuite) TestConfigureVitalityWithValidSnapUC16(c *C) {
 
 	defer snapstatetest.MockDeviceModel(uc16model)()
 
-	s.testConfigureVitalityWithValidSnap(c, false)
+	s.testConfigureVitalityWithValidSnap(c, false, assertStrings)
 }
 
-func (s *vitalitySuite) TestConfigureVitalityWithValidSnapUC18(c *C) {
-	s.testConfigureVitalityWithValidSnap(c, true)
+func (s *vitalitySuite) TestConfigureVitalityWithValidSnapUC16OldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testConfigureVitalityWithValidSnapUC16(c, [][]string{
+		{"daemon-reload"},
+	})
+}
+func (s *vitalitySuite) TestConfigureVitalityWithValidSnapUC16SmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testConfigureVitalityWithValidSnapUC16(c, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
+		{"daemon-reload"},
+	})
 }
 
-func (s *vitalitySuite) testConfigureVitalityWithValidSnap(c *C, uc18 bool) {
+func (s *vitalitySuite) TestConfigureVitalityWithValidSnapUC18OldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testConfigureVitalityWithValidSnap(c, true, [][]string{
+		{"daemon-reload"},
+	})
+}
+
+func (s *vitalitySuite) TestConfigureVitalityWithValidSnapUC18SmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+	s.testConfigureVitalityWithValidSnap(c, true, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
+		{"daemon-reload"},
+	})
+}
+
+func (s *vitalitySuite) testConfigureVitalityWithValidSnap(c *C, uc18 bool, assertStrings [][]string) {
 	si := &snap.SideInfo{RealName: "test-snap", Revision: snap.R(1)}
 	snaptest.MockSnap(c, mockSnapWithService, si)
 	s.state.Lock()
@@ -147,12 +192,10 @@ func (s *vitalitySuite) testConfigureVitalityWithValidSnap(c *C, uc18 bool) {
 	})
 	c.Assert(err, IsNil)
 	svcName := "snap.test-snap.foo.service"
-	c.Check(s.systemctlArgs, DeepEquals, [][]string{
-		{"daemon-reload"},
-		{"is-enabled", "snap.test-snap.foo.service"},
-		{"enable", "snap.test-snap.foo.service"},
-		{"start", "snap.test-snap.foo.service"},
-	})
+	assertStrings = append(assertStrings, []string{"is-enabled", "snap.test-snap.foo.service"})
+	assertStrings = append(assertStrings, []string{"enable", "snap.test-snap.foo.service"})
+	assertStrings = append(assertStrings, []string{"start", "snap.test-snap.foo.service"})
+	c.Check(s.systemctlArgs, DeepEquals, assertStrings)
 	svcPath := filepath.Join(dirs.SnapServicesDir, svcName)
 	c.Check(svcPath, testutil.FileContains, "\nOOMScoreAdjust=-898\n")
 	if uc18 {
@@ -160,7 +203,7 @@ func (s *vitalitySuite) testConfigureVitalityWithValidSnap(c *C, uc18 bool) {
 	}
 }
 
-func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroup(c *C) {
+func (s *vitalitySuite) testConfigureVitalityWithQuotaGroup(c *C, assertStrings [][]string) {
 	r := servicestate.MockSystemdVersion(248)
 	defer r()
 
@@ -182,7 +225,7 @@ func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroup(c *C) {
 		}
 
 		if cmd[0] == "show" {
-			return []byte("ActiveState=inactive\n"), nil
+			return []byte("ActiveState=inactive\nId=snap.test-snap.foo.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n\nActiveState=inactive\nId=snap.foogroup.slice\nUnitFileState=\nType=\nNeedDaemonReload=no\n"), nil
 		}
 		return nil, nil
 	})
@@ -205,15 +248,132 @@ func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroup(c *C) {
 	})
 	c.Assert(err, IsNil)
 	svcName := "snap.test-snap.foo.service"
-	c.Check(s.systemctlArgs, DeepEquals, [][]string{
-		{"daemon-reload"},
-		{"is-enabled", "snap.test-snap.foo.service"},
-		{"enable", "snap.test-snap.foo.service"},
-		{"start", "snap.test-snap.foo.service"},
-	})
+	assertStrings = append(assertStrings, []string{"is-enabled", "snap.test-snap.foo.service"})
+	assertStrings = append(assertStrings, []string{"enable", "snap.test-snap.foo.service"})
+	assertStrings = append(assertStrings, []string{"start", "snap.test-snap.foo.service"})
+	c.Check(s.systemctlArgs, DeepEquals, assertStrings)
+
 	svcPath := filepath.Join(dirs.SnapServicesDir, svcName)
 	c.Check(svcPath, testutil.FileContains, "\nOOMScoreAdjust=-898\n")
 	c.Check(svcPath, testutil.FileContains, "\nSlice=snap.foogroup.slice\n")
+}
+
+func (s *vitalitySuite) testConfigureVitalityWithQuotaGroupOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	r := servicestate.MockSystemdVersion(248)
+	defer r()
+
+	s.testConfigureVitalityWithQuotaGroup(c, [][]string{
+		{"daemon-reload"},
+	})
+}
+
+func (s *vitalitySuite) testConfigureVitalityWithQuotaGroupSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	r := servicestate.MockSystemdVersion(248)
+	defer r()
+
+	s.testConfigureVitalityWithQuotaGroup(c, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service", "snap.foogroup.slice"},
+	})
+}
+
+func (s *vitalitySuite) testConfigureVitalityWithQuotaGroupDaemonReload(c *C, assertStrings [][]string) {
+	si := &snap.SideInfo{RealName: "test-snap", Revision: snap.R(1)}
+	snaptest.MockSnap(c, mockSnapWithService, si)
+	s.state.Lock()
+	snapstate.Set(s.state, "test-snap", &snapstate.SnapState{
+		Sequence: []*snap.SideInfo{si},
+		Current:  snap.R(1),
+		Active:   true,
+		SnapType: "app",
+	})
+
+	// CreateQuota is calling "systemctl.Restart", which needs to be mocked
+	systemctlRestorer := systemd.MockSystemctl(func(cmd ...string) (buf []byte, err error) {
+		s.systemctlArgs = append(s.systemctlArgs, cmd)
+		if out := systemdtest.HandleMockAllUnitsActiveOutput(cmd, nil); out != nil {
+			return out, nil
+		}
+
+		if cmd[0] == "show" {
+			return []byte("ActiveState=inactive\nId=snap.test-snap.foo.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=yes\n"), nil
+		}
+		return nil, nil
+	})
+	s.AddCleanup(systemctlRestorer)
+
+	tr := config.NewTransaction(s.state)
+	tr.Set("core", "experimental.quota-groups", true)
+	tr.Commit()
+
+	// make a new quota group with this snap in it
+	err := servicestate.CreateQuota(s.state, "foogroup", "", []string{"test-snap"}, quantity.SizeMiB)
+	c.Assert(err, IsNil)
+
+	// CreateQuota uses systemctl, but we don't care about that here
+	s.systemctlArgs = nil
+
+	s.state.Unlock()
+
+	err = configcore.Run(classicDev, &mockConf{
+		state: s.state,
+		changes: map[string]interface{}{
+			"resilience.vitality-hint": "unrelated,test-snap",
+		},
+	})
+	c.Assert(err, IsNil)
+	svcName := "snap.test-snap.foo.service"
+
+	assertStrings = append(assertStrings, []string{"is-enabled", "snap.test-snap.foo.service"})
+	assertStrings = append(assertStrings, []string{"enable", "snap.test-snap.foo.service"})
+	assertStrings = append(assertStrings, []string{"start", "snap.test-snap.foo.service"})
+	c.Check(s.systemctlArgs, DeepEquals, assertStrings)
+
+	svcPath := filepath.Join(dirs.SnapServicesDir, svcName)
+	c.Check(svcPath, testutil.FileContains, "\nOOMScoreAdjust=-898\n")
+	c.Check(svcPath, testutil.FileContains, "\nSlice=snap.foogroup.slice\n")
+}
+
+func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroupDaemonReloadOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	r := servicestate.MockSystemdVersion(248)
+	defer r()
+
+	s.testConfigureVitalityWithQuotaGroupDaemonReload(c, [][]string{
+		{"daemon-reload"},
+	})
+}
+
+func (s *vitalitySuite) TestConfigureVitalityWithQuotaGroupDaemonReloadSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	r := servicestate.MockSystemdVersion(248)
+	defer r()
+
+	s.testConfigureVitalityWithQuotaGroupDaemonReload(c, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
+		{"daemon-reload"},
+	})
 }
 
 func (s *vitalitySuite) TestConfigureVitalityHintTooMany(c *C) {

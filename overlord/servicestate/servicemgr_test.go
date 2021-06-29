@@ -24,6 +24,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "gopkg.in/check.v1"
@@ -38,6 +39,7 @@ import (
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/snapstate/snapstatetest"
 	"github.com/snapcore/snapd/overlord/state"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/snaptest"
 	"github.com/snapcore/snapd/systemd"
@@ -138,7 +140,7 @@ func (s *baseServiceMgrTestSuite) SetUpTest(c *C) {
 
 type expectedSystemctl struct {
 	expArgs []string
-	output  string
+	output  []string
 	err     error
 }
 
@@ -226,11 +228,49 @@ func (s *baseServiceMgrTestSuite) mockSystemctlCalls(c *C, expCalls []expectedSy
 	allSystemctlCalls := [][]string{}
 	r := systemd.MockSystemctl(func(args ...string) ([]byte, error) {
 		systemctlCalls := len(allSystemctlCalls)
-		allSystemctlCalls = append(allSystemctlCalls, args)
 		if systemctlCalls < len(expCalls) {
 			res := expCalls[systemctlCalls]
-			c.Check(args, DeepEquals, res.expArgs)
-			return []byte(res.output), res.err
+			// if we have show command, unit order should not matter
+			var expectedArgs []string
+			var output []string
+			if args[0] == "show" && len(args) > 3 && len(args) == len(res.expArgs) {
+				// we have more than one unit, reorder expected reply array
+				// as unit order should not be dictated for show command
+				expectedArgs = append(expectedArgs, args[0], args[1])
+				i := 2
+				// handle InactiveEnterTimestamp case, which is passed as extra element in array
+				if args[2] == "InactiveEnterTimestamp" {
+					expectedArgs = append(expectedArgs, args[2])
+					i++
+				}
+				offset := i
+				for ; i < len(args); i++ {
+					// take passed args as order to obey for the reply string
+					for ii := offset; ii < len(res.expArgs); ii++ {
+						if args[i] == res.expArgs[ii] {
+							expectedArgs = append(expectedArgs, res.expArgs[ii])
+							if ii-offset < len(res.output) {
+								output = append(output, res.output[ii-offset])
+							}
+							continue
+						}
+					}
+				}
+			} else {
+				expectedArgs = res.expArgs
+				output = res.output
+			}
+			c.Check(args, DeepEquals, expectedArgs)
+			// use expected order for final confirmation, we just validated this step
+			allSystemctlCalls = append(allSystemctlCalls, res.expArgs)
+			// join output strings, add empty line in between for "show" command
+			if args[0] == "show" {
+				return []byte(strings.Join(output[:], "\n")), res.err
+			} else {
+				return []byte(strings.Join(output[:], "")), res.err
+			}
+		} else {
+			allSystemctlCalls = append(allSystemctlCalls, args)
 		}
 		c.Errorf("unexpected and unhandled systemctl command: %+v", args)
 		return nil, fmt.Errorf("broken test")
@@ -283,7 +323,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesNotSeeded(c *C) {
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleWritesServicesFilesUC16(c *C) {
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesSimpleWritesServicesFilesUC16(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -298,11 +338,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleWritesServicesFiles
 
 	// we will only trigger a daemon-reload once after generating the service
 	// file
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-	})
+	r := s.mockSystemctlCalls(c, expectedCalls)
 	defer r()
 
 	err := s.mgr.Ensure()
@@ -317,6 +353,39 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleWritesServicesFiles
 
 	// we did not request a restart
 	c.Assert(s.restartRequests, HasLen, 0)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleWritesServicesFilesUC16OldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesSimpleWritesServicesFilesUC16(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+		// ActiveState=inactive was passed, daemon-reload is not needed)
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleWritesServicesFilesUC16SmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesSimpleWritesServicesFilesUC16(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+		// ActiveState=inactive was passed, daemon-reload is not needed)
+	},
+	)
 }
 
 func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSkipsSnapdSnap(c *C) {
@@ -355,7 +424,7 @@ apps:
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC18(c *C) {
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesUC18(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -370,11 +439,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC18(c
 	err = ioutil.WriteFile(usrLibSnapdMountFile, nil, 0644)
 	c.Assert(err, IsNil)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-	})
+	r := s.mockSystemctlCalls(c, expectedCalls)
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -392,7 +457,107 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC18(c
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitalityRankUC18(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC18OldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesUC18(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC1SmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesUC18(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesUC18DaemonReload(c *C, expectedCalls []expectedSystemctl) {
+	s.state.Lock()
+	// there is a snap in snap state that needs a service generated for it
+	snapstate.Set(s.state, "test-snap", s.testSnapState)
+	snaptest.MockSnapCurrent(c, testYaml, s.testSnapSideInfo)
+
+	s.state.Unlock()
+
+	// add the usr-lib-snapd.mount unit
+	err := os.MkdirAll(dirs.SnapServicesDir, 0755)
+	c.Assert(err, IsNil)
+	usrLibSnapdMountFile := filepath.Join(dirs.SnapServicesDir, wrappers.SnapdToolingMountUnit)
+	err = ioutil.WriteFile(usrLibSnapdMountFile, nil, 0644)
+	c.Assert(err, IsNil)
+
+	r := s.mockSystemctlCalls(c, expectedCalls)
+	defer r()
+
+	err = s.mgr.Ensure()
+	c.Assert(err, IsNil)
+
+	// we wrote the service unit file
+	content := mkUnitFile(c, &unitOptions{
+		usrLibSnapdOrderVerb: "Wants",
+		snapName:             "test-snap",
+		snapRev:              "42",
+	})
+	c.Assert(filepath.Join(dirs.GlobalRootDir, "/etc/systemd/system/snap.test-snap.svc1.service"), testutil.FileEquals, content)
+
+	// we did not request a restart
+	c.Assert(s.restartRequests, HasLen, 0)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC18DaemonReloadOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesUC18DaemonReload(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+			output:  []string{""},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesUC18DaemonReloadSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesUC18DaemonReload(c, []expectedSystemctl{
+		{
+			// ActiveState=inactive was passed, daemon-reload is not needed
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesVitalityRankUC18(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -413,11 +578,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitali
 	err = ioutil.WriteFile(usrLibSnapdMountFile, nil, 0644)
 	c.Assert(err, IsNil)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-	})
+	r := s.mockSystemctlCalls(c, expectedCalls)
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -436,7 +597,113 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitali
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndDoesNotRestartIfBootTimeAfterModTime(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitalityRankUC18OldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesVitalityRankUC18(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+			output:  []string{""},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitalityRankUC18SmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesVitalityRankUC18(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesVitalityRankUC18DaemonReload(c *C, expectedCalls []expectedSystemctl) {
+	s.state.Lock()
+	// there is a snap in snap state that needs a service generated for it
+	snapstate.Set(s.state, "test-snap", s.testSnapState)
+	snaptest.MockSnapCurrent(c, testYaml, s.testSnapSideInfo)
+
+	// also set vitality-hint for this snap
+	t := config.NewTransaction(s.state)
+	err := t.Set("core", "resilience.vitality-hint", "bar,test-snap")
+	c.Assert(err, IsNil)
+	t.Commit()
+
+	s.state.Unlock()
+
+	// add the usr-lib-snapd.mount unit
+	err = os.MkdirAll(dirs.SnapServicesDir, 0755)
+	c.Assert(err, IsNil)
+	usrLibSnapdMountFile := filepath.Join(dirs.SnapServicesDir, wrappers.SnapdToolingMountUnit)
+	err = ioutil.WriteFile(usrLibSnapdMountFile, nil, 0644)
+	c.Assert(err, IsNil)
+
+	r := s.mockSystemctlCalls(c, expectedCalls)
+	defer r()
+
+	err = s.mgr.Ensure()
+	c.Assert(err, IsNil)
+
+	// we wrote the service unit file
+	content := mkUnitFile(c, &unitOptions{
+		usrLibSnapdOrderVerb: "Wants",
+		snapName:             "test-snap",
+		snapRev:              "42",
+		oomScore:             "-898",
+	})
+	c.Assert(filepath.Join(dirs.GlobalRootDir, "/etc/systemd/system/snap.test-snap.svc1.service"), testutil.FileEquals, content)
+
+	// we did not request a restart
+	c.Assert(s.restartRequests, HasLen, 0)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitalityRankUC18DaemonReloadOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesVitalityRankUC18DaemonReload(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+		// ActiveState=inactive was passed, daemon-reload is not needed
+	})
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesVitalityRankUC18DaemonReloadSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesVitalityRankUC18DaemonReload(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+		// ActiveState=inactive was passed, daemon-reload is not needed
+	})
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesAndDoesNotRestartIfBootTimeAfterModTime(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -495,11 +762,7 @@ echo %[1]q
 	err = ioutil.WriteFile(svcFile, []byte(requiresContent), 0644)
 	c.Assert(err, IsNil)
 
-	r = s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-	})
+	r = s.mockSystemctlCalls(c, expectedCalls)
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -523,7 +786,39 @@ echo %[1]q
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndIgnoresBootTimeErrors(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndDoesNotRestartIfBootTimeAfterModTimeOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesAndDoesNotRestartIfBootTimeAfterModTime(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	})
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndDoesNotRestartIfBootTimeAfterModTimeSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesAndDoesNotRestartIfBootTimeAfterModTime(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	})
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesAndIgnoresBootTimeErrors(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -566,17 +861,15 @@ exit 1
 	err = ioutil.WriteFile(svcFile, []byte(requiresContent), 0644)
 	c.Assert(err, IsNil)
 
-	r = s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r = s.mockSystemctlCalls(c, append(expectedCalls,
+		// ActiveState=inactive was passed, daemon-reload is not needed
+		expectedSystemctl{
 			// usr-lib-snapd.mount has never been stopped though so we skip out
 			// anyways
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  "InactiveEnterTimestamp=",
+			output:  []string{"InactiveEnterTimestamp="},
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -598,6 +891,37 @@ exit 1
 
 	// we did not request a restart
 	c.Assert(s.restartRequests, HasLen, 0)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndIgnoresBootTimeErrorsOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesAndIgnoresBootTimeErrors(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndIgnoresBootTimeErrorsSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesAndIgnoresBootTimeErrors(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
 }
 
 func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRestarts(c *C) {
@@ -635,23 +959,27 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRes
 
 	r := s.mockSystemctlCalls(c, []expectedSystemctl{
 		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+		{
 			expArgs: []string{"daemon-reload"},
 		},
 		{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
 		{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future (hence before the usr-lib-snapd.mount unit was stopped and
 			// after usr-lib-snapd.mount file was modified)
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
 		{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
 		{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
@@ -680,7 +1008,7 @@ func (s systemctlDisabledServiceError) Msg() []byte   { return []byte("disabled"
 func (s systemctlDisabledServiceError) ExitCode() int { return 1 }
 func (s systemctlDisabledServiceError) Error() string { return "disabled service" }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesButDoesNotRestartDisabledServices(c *C) {
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesButDoesNotRestartDisabledServices(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -713,30 +1041,28 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesButDoe
 	slightFuture := now.Add(30 * time.Minute).Format(systemdTimeFormat)
 	theFuture := now.Add(1 * time.Hour).Format(systemdTimeFormat)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		// ActiveState=inactive was passed, daemon-reload is not needed
+		expectedSystemctl{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
-		{
+		expectedSystemctl{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future (hence before the usr-lib-snapd.mount unit was stopped and
 			// after usr-lib-snapd.mount file was modified)
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
 		// the service is disabled
-		{
+		expectedSystemctl{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "disabled",
+			output:  []string{"disabled"},
 			err:     systemctlDisabledServiceError{},
 		},
 		// then we don't restart the service even though it was killed
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -754,7 +1080,38 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesButDoe
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKilledBeforeSnapdRefresh(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesButDoesNotRestartDisabledServicesOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesButDoesNotRestartDisabledServices(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesButDoesNotRestartDisabledServicesSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesButDoesNotRestartDisabledServices(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesDoesNotRestartServicesKilledBeforeSnapdRefresh(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -787,22 +1144,19 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKil
 	theFuture := now.Add(1 * time.Hour).Format(systemdTimeFormat)
 	thePast := now.Add(-30 * time.Minute).Format(systemdTimeFormat)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		expectedSystemctl{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
-		{
+		expectedSystemctl{
 			// but the snap.test-snap.svc1 was stopped before that, so it isn't
 			// restarted
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", thePast),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", thePast)},
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -820,7 +1174,42 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKil
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKilledAfterSnapdRefresh(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKilledBeforeSnapdRefreshOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesDoesNotRestartServicesKilledBeforeSnapdRefresh(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+			output:  []string{""},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKilledBeforeSnapdRefreshSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesDoesNotRestartServicesKilledBeforeSnapdRefresh(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesDoesNotRestartServicesKilledAfterSnapdRefresh(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -853,22 +1242,19 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKil
 	theFuture := now.Add(1 * time.Hour).Format(systemdTimeFormat)
 	thePast := now.Add(-30 * time.Minute).Format(systemdTimeFormat)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		expectedSystemctl{
 			// usr-lib-snapd.mount was stopped in the past
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", thePast),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", thePast)},
 		},
-		{
+		expectedSystemctl{
 			// but the snap.test-snap.svc1 was stopped after that, so it isn't
 			// restarted
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -886,7 +1272,39 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKil
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionSilly(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKilledAfterSnapdRefreshOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesDoesNotRestartServicesKilledAfterSnapdRefresh(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+			output:  []string{""},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesKilledAfterSnapdRefreshSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesDoesNotRestartServicesKilledAfterSnapdRefresh(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nType=simple\nActiveState=inactive\nUnitFileState=enabled\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionSilly(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -933,29 +1351,27 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 	err = ioutil.WriteFile(svcFile, []byte(requiresContent), 0644)
 	c.Assert(err, IsNil)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		// ActiveState=inactive was passed, daemon-reload is not needed
+		expectedSystemctl{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str)},
 		},
-		{
+		expectedSystemctl{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str)},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -973,7 +1389,39 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionMoreSilly(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionSillyOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionSilly(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+			output:  []string{""},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionSillySmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionSilly(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"ActiveState=inactive\nId=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionMoreSilly(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -1020,29 +1468,27 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 	err = ioutil.WriteFile(svcFile, []byte(requiresContent), 0644)
 	c.Assert(err, IsNil)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		// ActiveState=inactive was passed, daemon-reload is not needed
+		expectedSystemctl{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str)},
 		},
-		{
+		expectedSystemctl{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", t1Str)},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -1060,7 +1506,39 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsUC18(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionMoreSillyOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionMoreSilly(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+			output:  []string{""},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionMoreSillySmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsTimePrecisionMoreSilly(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsUC18(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -1093,29 +1571,26 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 	err = ioutil.WriteFile(svcFile, []byte(requiresContent), 0644)
 	c.Assert(err, IsNil)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		expectedSystemctl{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
-		{
+		expectedSystemctl{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -1131,6 +1606,40 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFil
 
 	// we did not request a restart
 	c.Assert(s.restartRequests, HasLen, 0)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsUC18OldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsUC18(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsUC18SmartSystem(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesSimpleRewritesServicesFilesAndRestartsUC18(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
 }
 
 func (s *ensureSnapServiceSuite) TestEnsureSnapServicesNoChangeServiceFileDoesNothingUC18(c *C) {
@@ -1177,7 +1686,7 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesNoChangeServiceFileDoesNo
 
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesWhenUsrLibSnapdWasNeverInactive(c *C) {
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesDoesNotRestartServicesWhenUsrLibSnapdWasNeverInactive(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -1206,17 +1715,15 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesWhe
 	err = ioutil.WriteFile(svcFile, []byte(requiresContent), 0644)
 	c.Assert(err, IsNil)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		// ActiveState=inactive was passed, daemon-reload is not needed
+		expectedSystemctl{
 			// usr-lib-snapd.mount has never been stopped this boot, thus has
 			// always been active
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  "InactiveEnterTimestamp=",
+			output:  []string{"InactiveEnterTimestamp="},
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -1233,7 +1740,39 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesWhe
 	c.Assert(s.restartRequests, HasLen, 0)
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRestartsButThenFallsbackToReboot(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesWhenUsrLibSnapdWasNeverInactiveOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesDoesNotRestartServicesWhenUsrLibSnapdWasNeverInactive(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+			output:  []string{""},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesDoesNotRestartServicesWhenUsrLibSnapdWasNeverInactiveSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesDoesNotRestartServicesWhenUsrLibSnapdWasNeverInactive(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesAndRestartsButThenFallsbackToReboot(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -1266,35 +1805,33 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRes
 	slightFuture := now.Add(30 * time.Minute).Format(systemdTimeFormat)
 	theFuture := now.Add(1 * time.Hour).Format(systemdTimeFormat)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		// ActiveState=inactive was passed, daemon-reload is not needed
+		expectedSystemctl{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
-		{
+		expectedSystemctl{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future (hence before the usr-lib-snapd.mount unit was stopped and
 			// after usr-lib-snapd.mount file was modified)
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
-			output:  "enabled",
+			output:  []string{"enabled"},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"start", "snap.test-snap.svc1.service"},
 			err:     fmt.Errorf("this service is having a bad day"),
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"stop", "snap.test-snap.svc1.service"},
 			err:     fmt.Errorf("this service is still having a bad day"),
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -1312,7 +1849,38 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRes
 	c.Assert(s.restartRequests, DeepEquals, []state.RestartType{state.RestartSystemNow})
 }
 
-func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndTriesRestartButFailsButThenFallsbackToReboot(c *C) {
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRestartsButThenFallsbackToRebootOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesAndRestartsButThenFallsbackToReboot(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndRestartsButThenFallsbackToRebootSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesAndRestartsButThenFallsbackToReboot(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) testEnsureSnapServicesWritesServicesFilesAndTriesRestartButFailsButThenFallsbackToReboot(c *C, expectedCalls []expectedSystemctl) {
 	s.state.Lock()
 	// there is a snap in snap state that needs a service generated for it
 	snapstate.Set(s.state, "test-snap", s.testSnapState)
@@ -1345,27 +1913,25 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndTri
 	slightFuture := now.Add(30 * time.Minute).Format(systemdTimeFormat)
 	theFuture := now.Add(1 * time.Hour).Format(systemdTimeFormat)
 
-	r := s.mockSystemctlCalls(c, []expectedSystemctl{
-		{
-			expArgs: []string{"daemon-reload"},
-		},
-		{
+	r := s.mockSystemctlCalls(c, append(expectedCalls,
+		// ActiveState=inactive was passed, daemon-reload is not needed
+		expectedSystemctl{
 			// usr-lib-snapd.mount was stopped "far in the future"
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "usr-lib-snapd.mount"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", theFuture)},
 		},
-		{
+		expectedSystemctl{
 			// but the snap.test-snap.svc1 was stopped only slightly in the
 			// future (hence before the usr-lib-snapd.mount unit was stopped and
 			// after usr-lib-snapd.mount file was modified)
 			expArgs: []string{"show", "--property", "InactiveEnterTimestamp", "snap.test-snap.svc1.service"},
-			output:  fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture),
+			output:  []string{fmt.Sprintf("InactiveEnterTimestamp=%s", slightFuture)},
 		},
-		{
+		expectedSystemctl{
 			expArgs: []string{"is-enabled", "snap.test-snap.svc1.service"},
 			err:     fmt.Errorf("systemd is having a bad day"),
 		},
-	})
+	))
 	defer r()
 
 	err = s.mgr.Ensure()
@@ -1381,4 +1947,36 @@ func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndTri
 
 	// we requested a restart
 	c.Assert(s.restartRequests, DeepEquals, []state.RestartType{state.RestartSystemNow})
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndTriesRestartButFailsButThenFallsbackToRebootOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesAndTriesRestartButFailsButThenFallsbackToReboot(c, []expectedSystemctl{
+		{
+			expArgs: []string{"daemon-reload"},
+			output:  []string{""},
+		},
+	},
+	)
+}
+
+func (s *ensureSnapServiceSuite) TestEnsureSnapServicesWritesServicesFilesAndTriesRestartButFailsButThenFallsbackToRebootSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testEnsureSnapServicesWritesServicesFilesAndTriesRestartButFailsButThenFallsbackToReboot(c, []expectedSystemctl{
+		{
+			expArgs: []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.svc1.service"},
+			output:  []string{"Id=snap.test-snap.svc1.service\nActiveState=inactive\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n"},
+		},
+	},
+	)
 }

@@ -20,6 +20,7 @@
 package servicestate_test
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -92,7 +93,13 @@ func (s *serviceControlSuite) SetUpTest(c *C) {
 
 		s.sysctlArgs = append(s.sysctlArgs, cmd)
 		if cmd[0] == "show" {
-			return []byte("ActiveState=inactive\n"), nil
+			// return correct number of statuses
+			output := []byte(fmt.Sprintf("ActiveState=inactive\nId=%s\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n", cmd[2]))
+			for i := 3; i < len(cmd); i++ {
+				output = append(output, []byte(fmt.Sprintf("\nActiveState=inactive\nId=%s\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n", cmd[i]))...)
+			}
+
+			return output, nil
 		}
 		return nil, nil
 	})
@@ -704,9 +711,7 @@ func (s *serviceControlSuite) TestStartEnableMultipleServices(c *C) {
 
 	c.Assert(t.Status(), Equals, state.DoneStatus)
 	c.Check(s.sysctlArgs, DeepEquals, [][]string{
-		{"enable", "snap.test-snap.foo.service"},
-		{"enable", "snap.test-snap.bar.service"},
-		{"enable", "snap.test-snap.abc.service"},
+		{"enable", "snap.test-snap.foo.service", "snap.test-snap.bar.service", "snap.test-snap.abc.service"},
 		{"start", "snap.test-snap.foo.service"},
 		{"start", "snap.test-snap.bar.service"},
 		{"start", "snap.test-snap.abc.service"},
@@ -785,9 +790,10 @@ func (s *serviceControlSuite) TestRestartServices(c *C) {
 	chg := st.NewChange("service-control", "...")
 	t := st.NewTask("service-control", "...")
 	cmd := &servicestate.ServiceAction{
-		SnapName: "test-snap",
-		Action:   "restart",
-		Services: []string{"foo"},
+		SnapName:         "test-snap",
+		Action:           "restart",
+		Services:         []string{"foo"},
+		ExplicitServices: []string{"snap.test-snap.foo.service"},
 	}
 	t.Set("service-action", cmd)
 	chg.AddTask(t)
@@ -800,6 +806,7 @@ func (s *serviceControlSuite) TestRestartServices(c *C) {
 
 	c.Assert(t.Status(), Equals, state.DoneStatus)
 	c.Check(s.sysctlArgs, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
 		{"stop", "snap.test-snap.foo.service"},
 		{"show", "--property=ActiveState", "snap.test-snap.foo.service"},
 		{"start", "snap.test-snap.foo.service"},
@@ -830,7 +837,12 @@ func (s *serviceControlSuite) testRestartWithExplicitServicesCommon(c *C,
 
 		s.sysctlArgs = append(s.sysctlArgs, cmd)
 		if cmd[0] == "show" {
-			return []byte("ActiveState=inactive\n"), nil
+			// return correct number of statuses
+			output := []byte(fmt.Sprintf("ActiveState=inactive\nId=%s\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n", cmd[2]))
+			for i := 3; i < len(cmd); i++ {
+				output = append(output, []byte(fmt.Sprintf("\nActiveState=inactive\nId=%s\nUnitFileState=enabled\nType=simple\nNeedDaemonReload=no\n", cmd[i]))...)
+			}
+			return output, nil
 		}
 		return nil, nil
 	})
@@ -865,9 +877,11 @@ func (s *serviceControlSuite) testRestartWithExplicitServicesCommon(c *C,
 func (s *serviceControlSuite) TestRestartWithSomeExplicitServices(c *C) {
 	srvFoo := "snap.test-snap.foo.service"
 	srvBar := "snap.test-snap.bar.service"
+	srvAbc := "snap.test-snap.abc.service"
 	s.testRestartWithExplicitServicesCommon(c,
-		[]string{srvFoo},
+		[]string{srvFoo, srvBar},
 		[][]string{
+			{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", srvFoo, srvBar, srvAbc},
 			{"stop", srvFoo},
 			{"show", "--property=ActiveState", srvFoo},
 			{"start", srvFoo},
@@ -884,6 +898,7 @@ func (s *serviceControlSuite) TestRestartWithAllExplicitServices(c *C) {
 	s.testRestartWithExplicitServicesCommon(c,
 		[]string{srvAbc, srvBar, srvFoo},
 		[][]string{
+			{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", srvFoo, srvBar, srvAbc},
 			{"stop", srvFoo},
 			{"show", "--property=ActiveState", srvFoo},
 			{"start", srvFoo},
@@ -906,9 +921,10 @@ func (s *serviceControlSuite) TestRestartAllServices(c *C) {
 	chg := st.NewChange("service-control", "...")
 	t := st.NewTask("service-control", "...")
 	cmd := &servicestate.ServiceAction{
-		SnapName: "test-snap",
-		Action:   "restart",
-		Services: []string{"abc", "foo", "bar"},
+		SnapName:         "test-snap",
+		Action:           "restart",
+		Services:         []string{"abc", "foo", "bar"},
+		ExplicitServices: []string{"snap.test-snap.foo.service", "snap.test-snap.abc.service", "snap.test-snap.bar.service"},
 	}
 	t.Set("service-action", cmd)
 	chg.AddTask(t)
@@ -921,6 +937,7 @@ func (s *serviceControlSuite) TestRestartAllServices(c *C) {
 
 	c.Assert(t.Status(), Equals, state.DoneStatus)
 	c.Check(s.sysctlArgs, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service", "snap.test-snap.bar.service", "snap.test-snap.abc.service"},
 		{"stop", "snap.test-snap.foo.service"},
 		{"show", "--property=ActiveState", "snap.test-snap.foo.service"},
 		{"start", "snap.test-snap.foo.service"},
@@ -943,9 +960,10 @@ func (s *serviceControlSuite) TestReloadServices(c *C) {
 	chg := st.NewChange("service-control", "...")
 	t := st.NewTask("service-control", "...")
 	cmd := &servicestate.ServiceAction{
-		SnapName: "test-snap",
-		Action:   "reload-or-restart",
-		Services: []string{"foo"},
+		SnapName:         "test-snap",
+		Action:           "reload-or-restart",
+		Services:         []string{"foo"},
+		ExplicitServices: []string{"snap.test-snap.foo.service"},
 	}
 	t.Set("service-action", cmd)
 	chg.AddTask(t)
@@ -958,6 +976,7 @@ func (s *serviceControlSuite) TestReloadServices(c *C) {
 
 	c.Assert(t.Status(), Equals, state.DoneStatus)
 	c.Check(s.sysctlArgs, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service"},
 		{"reload-or-restart", "snap.test-snap.foo.service"},
 	})
 }
@@ -972,9 +991,10 @@ func (s *serviceControlSuite) TestReloadAllServices(c *C) {
 	chg := st.NewChange("service-control", "...")
 	t := st.NewTask("service-control", "...")
 	cmd := &servicestate.ServiceAction{
-		SnapName: "test-snap",
-		Action:   "reload-or-restart",
-		Services: []string{"foo", "abc", "bar"},
+		SnapName:         "test-snap",
+		Action:           "reload-or-restart",
+		Services:         []string{"foo", "abc", "bar"},
+		ExplicitServices: []string{"snap.test-snap.foo.service", "snap.test-snap.abc.service", "snap.test-snap.bar.service"},
 	}
 	t.Set("service-action", cmd)
 	chg.AddTask(t)
@@ -987,6 +1007,7 @@ func (s *serviceControlSuite) TestReloadAllServices(c *C) {
 
 	c.Assert(t.Status(), Equals, state.DoneStatus)
 	c.Check(s.sysctlArgs, DeepEquals, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap.test-snap.foo.service", "snap.test-snap.bar.service", "snap.test-snap.abc.service"},
 		{"reload-or-restart", "snap.test-snap.foo.service"},
 		{"reload-or-restart", "snap.test-snap.bar.service"},
 		{"reload-or-restart", "snap.test-snap.abc.service"},

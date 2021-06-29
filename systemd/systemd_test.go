@@ -37,6 +37,7 @@ import (
 	"github.com/snapcore/snapd/gadget/quantity"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/osutil/squashfs"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/sandbox/selinux"
 	. "github.com/snapcore/snapd/systemd"
 	"github.com/snapcore/snapd/testutil"
@@ -179,7 +180,7 @@ func (s *SystemdTestSuite) TestStop(c *C) {
 		[]byte("ActiveState=inactive\n"),
 	}
 	s.errors = []error{nil, nil, nil, nil, &Timeout{}}
-	err := New(SystemMode, s.rep).Stop("foo", 1*time.Second)
+	err := New(SystemMode, s.rep).Stop(1*time.Second, "foo")
 	c.Assert(err, IsNil)
 	c.Assert(s.argses, HasLen, 4)
 	c.Check(s.argses[0], DeepEquals, []string{"stop", "foo"})
@@ -195,30 +196,36 @@ Type=simple
 Id=foo.service
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 
 Type=simple
 Id=bar.service
 ActiveState=reloading
 UnitFileState=static
+NeedDaemonReload=no
 
 Type=potato
 Id=baz.service
 ActiveState=inactive
 UnitFileState=disabled
+NeedDaemonReload=yes
 
 Type=
 Id=missing.service
 ActiveState=inactive
 UnitFileState=
+NeedDaemonReload=no
 `[1:]),
 		[]byte(`
 Id=some.timer
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=yes
 
 Id=other.socket
 ActiveState=active
 UnitFileState=disabled
+NeedDaemonReload=yes
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -226,44 +233,50 @@ UnitFileState=disabled
 	c.Assert(err, IsNil)
 	c.Check(out, DeepEquals, []*UnitStatus{
 		{
-			Daemon:    "simple",
-			UnitName:  "foo.service",
-			Active:    true,
-			Enabled:   true,
-			Installed: true,
+			Daemon:           "simple",
+			UnitName:         "foo.service",
+			Active:           true,
+			Enabled:          true,
+			Installed:        true,
+			NeedDaemonReload: false,
 		}, {
-			Daemon:    "simple",
-			UnitName:  "bar.service",
-			Active:    true,
-			Enabled:   true,
-			Installed: true,
+			Daemon:           "simple",
+			UnitName:         "bar.service",
+			Active:           true,
+			Enabled:          true,
+			Installed:        true,
+			NeedDaemonReload: false,
 		}, {
-			Daemon:    "potato",
-			UnitName:  "baz.service",
-			Active:    false,
-			Enabled:   false,
-			Installed: true,
+			Daemon:           "potato",
+			UnitName:         "baz.service",
+			Active:           false,
+			Enabled:          false,
+			Installed:        true,
+			NeedDaemonReload: true,
 		}, {
-			Daemon:    "",
-			UnitName:  "missing.service",
-			Active:    false,
-			Enabled:   false,
-			Installed: false,
+			Daemon:           "",
+			UnitName:         "missing.service",
+			Active:           false,
+			Enabled:          false,
+			Installed:        false,
+			NeedDaemonReload: false,
 		}, {
-			UnitName:  "some.timer",
-			Active:    true,
-			Enabled:   true,
-			Installed: true,
+			UnitName:         "some.timer",
+			Active:           true,
+			Enabled:          true,
+			Installed:        true,
+			NeedDaemonReload: true,
 		}, {
-			UnitName:  "other.socket",
-			Active:    true,
-			Enabled:   false,
-			Installed: true,
+			UnitName:         "other.socket",
+			Active:           true,
+			Enabled:          false,
+			Installed:        true,
+			NeedDaemonReload: true,
 		},
 	})
 	c.Check(s.rep.msgs, IsNil)
 	c.Assert(s.argses, DeepEquals, [][]string{
-		{"show", "--property=Id,ActiveState,UnitFileState,Type", "foo.service", "bar.service", "baz.service", "missing.service"},
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "foo.service", "bar.service", "baz.service", "missing.service"},
 		{"show", "--property=Id,ActiveState,UnitFileState", "some.timer", "other.socket"},
 	})
 }
@@ -275,11 +288,13 @@ Type=simple
 Id=foo.service
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 
 Type=simple
 Id=foo.service
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -312,6 +327,7 @@ Type=simple
 Id=bar.service
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -328,6 +344,7 @@ Id=foo.service
 ActiveState=active
 UnitFileState=enabled
 Potatoes=false
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -341,6 +358,7 @@ func (s *SystemdTestSuite) TestStatusMissingRequiredFieldService(c *C) {
 		[]byte(`
 Id=foo.service
 ActiveState=active
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -370,6 +388,7 @@ Id=foo.service
 ActiveState=active
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -385,6 +404,7 @@ Type=simple
 Id=
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:]),
 	}
 	s.errors = []error{nil}
@@ -396,10 +416,10 @@ UnitFileState=enabled
 func (s *SystemdTestSuite) TestStopTimeout(c *C) {
 	restore := MockStopDelays(time.Millisecond, 25*time.Second)
 	defer restore()
-	err := New(SystemMode, s.rep).Stop("foo", 10*time.Millisecond)
+	err := New(SystemMode, s.rep).Stop(10*time.Millisecond, "foo")
 	c.Assert(err, FitsTypeOf, &Timeout{})
 	c.Assert(len(s.rep.msgs) > 0, Equals, true)
-	c.Check(s.rep.msgs[0], Equals, "Waiting for foo to stop.")
+	c.Check(s.rep.msgs[0], Equals, "Waiting for [\"foo\"] to stop.")
 }
 
 func (s *SystemdTestSuite) TestDisable(c *C) {
@@ -492,6 +512,30 @@ func (s *SystemdTestSuite) TestUnmaskUnderRoot(c *C) {
 	c.Check(s.argses, DeepEquals, [][]string{{"--root", "xyzzy", "unmask", "foo"}})
 }
 
+func (s *SystemdTestSuite) TestIsFailed(c *C) {
+	isFailed := New(SystemMode, s.rep).IsFailed("foo")
+	c.Assert(isFailed, Equals, true)
+	c.Check(s.argses, DeepEquals, [][]string{{"--root", "", "is-failed", "foo"}})
+}
+
+func (s *SystemdTestSuite) TestIsFailedUnderRoot(c *C) {
+	isFailed := NewUnderRoot("xyzzy", SystemMode, s.rep).IsFailed("foo")
+	c.Assert(isFailed, Equals, true)
+	c.Check(s.argses, DeepEquals, [][]string{{"--root", "xyzzy", "is-failed", "foo"}})
+}
+
+func (s *SystemdTestSuite) TestResetFailed(c *C) {
+	err := New(SystemMode, s.rep).ResetFailed("foo")
+	c.Assert(err, IsNil)
+	c.Check(s.argses, DeepEquals, [][]string{{"--root", "", "reset-failed", "foo"}})
+}
+
+func (s *SystemdTestSuite) TestResetFailedUnderRoot(c *C) {
+	err := NewUnderRoot("xyzzy", SystemMode, s.rep).ResetFailed("foo")
+	c.Assert(err, IsNil)
+	c.Check(s.argses, DeepEquals, [][]string{{"--root", "xyzzy", "reset-failed", "foo"}})
+}
+
 func (s *SystemdTestSuite) TestRestart(c *C) {
 	restore := MockStopDelays(time.Millisecond, 25*time.Second)
 	defer restore()
@@ -501,7 +545,7 @@ func (s *SystemdTestSuite) TestRestart(c *C) {
 		nil, // for the "start"
 	}
 	s.errors = []error{nil, nil, nil, nil, &Timeout{}}
-	err := New(SystemMode, s.rep).Restart("foo", 100*time.Millisecond)
+	err := New(SystemMode, s.rep).Restart(100*time.Millisecond, "foo")
 	c.Assert(err, IsNil)
 	c.Check(s.argses, HasLen, 3)
 	c.Check(s.argses[0], DeepEquals, []string{"stop", "foo"})
@@ -744,7 +788,7 @@ func makeMockFile(c *C, path string) {
 	c.Assert(err, IsNil)
 }
 
-func (s *SystemdTestSuite) TestAddMountUnit(c *C) {
+func (s *SystemdTestSuite) testAddMountUnit(c *C, assertStrings [][]string) {
 	rootDir := dirs.GlobalRootDir
 
 	restore := squashfs.MockNeedsFuse(false)
@@ -773,15 +817,36 @@ LazyUnmount=yes
 [Install]
 WantedBy=multi-user.target
 `[1:], mockSnapPath))
-
-	c.Assert(s.argses, DeepEquals, [][]string{
-		{"daemon-reload"},
-		{"--root", rootDir, "enable", "snap-snapname-123.mount"},
-		{"start", "snap-snapname-123.mount"},
-	})
+	assertStrings = append(assertStrings, []string{"--root", rootDir, "enable", "snap-snapname-123.mount"})
+	assertStrings = append(assertStrings, []string{"start", "snap-snapname-123.mount"})
+	c.Assert(s.argses, DeepEquals, assertStrings)
 }
 
-func (s *SystemdTestSuite) TestAddMountUnitForDirs(c *C) {
+func (s *SystemdTestSuite) TestAddMountUnitOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testAddMountUnit(c, [][]string{{"daemon-reload"}})
+}
+
+func (s *SystemdTestSuite) TestAddMountUnitSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testAddMountUnit(c, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-snapname-123.mount"},
+		{"daemon-reload"},
+	},
+	)
+}
+
+func (s *SystemdTestSuite) testAddMountUnitForDirs(c *C, assertStrings [][]string) {
 	restore := squashfs.MockNeedsFuse(false)
 	defer restore()
 
@@ -808,10 +873,33 @@ LazyUnmount=yes
 WantedBy=multi-user.target
 `[1:], snapDir))
 
-	c.Assert(s.argses, DeepEquals, [][]string{
+	assertStrings = append(assertStrings, []string{"enable", "snap-snapname-x1.mount"})
+	assertStrings = append(assertStrings, []string{"start", "snap-snapname-x1.mount"})
+	c.Check(s.argses, DeepEquals, assertStrings)
+}
+
+func (s *SystemdTestSuite) TestAddMountUnitForDirsOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testAddMountUnitForDirs(c, [][]string{{"daemon-reload"}})
+}
+
+func (s *SystemdTestSuite) TestAddMountUnitForDirsSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+	restore := squashfs.MockNeedsFuse(false)
+	defer restore()
+
+	s.testAddMountUnitForDirs(c, [][]string{
+		{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-snapname-x1.mount"},
 		{"daemon-reload"},
-		{"enable", "snap-snapname-x1.mount"},
-		{"start", "snap-snapname-x1.mount"},
 	})
 }
 
@@ -1038,7 +1126,7 @@ func makeMockMountUnit(c *C, mountDir string) string {
 }
 
 // FIXME: also test for the "IsMounted" case
-func (s *SystemdTestSuite) TestRemoveMountUnit(c *C) {
+func (s *SystemdTestSuite) testRemoveMountUnit(c *C, assertStrings []string) {
 	rootDir := dirs.GlobalRootDir
 
 	restore := osutil.MockMountInfo("")
@@ -1054,8 +1142,29 @@ func (s *SystemdTestSuite) TestRemoveMountUnit(c *C) {
 	// and the unit is disabled and the daemon reloaded
 	c.Check(s.argses, DeepEquals, [][]string{
 		{"--root", rootDir, "disable", "snap-foo-42.mount"},
-		{"daemon-reload"},
+		{"--root", rootDir, "is-failed", "snap-foo-42.mount"},
+		{"--root", rootDir, "reset-failed", "snap-foo-42.mount"},
+		assertStrings,
 	})
+}
+func (s *SystemdTestSuite) TestRemoveMountUnitOldSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(true)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu", VersionID: "14.04"})
+	defer releaseRestore()
+
+	s.testRemoveMountUnit(c, []string{"daemon-reload"})
+}
+
+func (s *SystemdTestSuite) TestRemoveMountUnitSmartSystemd(c *C) {
+	releaseRestore := release.MockOnClassic(false)
+	defer releaseRestore()
+
+	releaseRestore = release.MockReleaseInfo(&release.OS{ID: "ubuntu-core", VersionID: "20"})
+	defer releaseRestore()
+
+	s.testRemoveMountUnit(c, []string{"show", "--property=Id,ActiveState,UnitFileState,Type,NeedDaemonReload", "snap-foo-42.mount"})
 }
 
 func (s *SystemdTestSuite) TestDaemonReloadMutex(c *C) {
@@ -1130,8 +1239,8 @@ func (s *SystemdTestSuite) TestGlobalUserMode(c *C) {
 	c.Check(sysd.DaemonReexec, Panics, "cannot call daemon-reexec with GlobalUserMode")
 	c.Check(func() { sysd.Start("foo") }, Panics, "cannot call start with GlobalUserMode")
 	c.Check(func() { sysd.StartNoBlock("foo") }, Panics, "cannot call start with GlobalUserMode")
-	c.Check(func() { sysd.Stop("foo", 0) }, Panics, "cannot call stop with GlobalUserMode")
-	c.Check(func() { sysd.Restart("foo", 0) }, Panics, "cannot call restart with GlobalUserMode")
+	c.Check(func() { sysd.Stop(0, "foo") }, Panics, "cannot call stop with GlobalUserMode")
+	c.Check(func() { sysd.Restart(0, "foo") }, Panics, "cannot call restart with GlobalUserMode")
 	c.Check(func() { sysd.Kill("foo", "HUP", "") }, Panics, "cannot call kill with GlobalUserMode")
 	c.Check(func() { sysd.IsActive("foo") }, Panics, "cannot call is-active with GlobalUserMode")
 }

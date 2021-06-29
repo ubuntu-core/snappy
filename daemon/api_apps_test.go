@@ -184,6 +184,7 @@ Id=snap.%s.service
 Type=simple
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:], name)))
 	}
 	// System services from inactive snaps
@@ -272,6 +273,7 @@ Id=snap.%s.service
 Type=simple
 ActiveState=active
 UnitFileState=enabled
+NeedDaemonReload=no
 `[1:], name)))
 	}
 	// System services from inactive snaps
