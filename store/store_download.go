@@ -83,7 +83,7 @@ func init() {
 func useDeltas() bool {
 	// only xdelta3 is supported for now, so check the binary exists here
 	// TODO: have a per-format checker instead
-	if _, err := getXdelta3Cmd(); err != nil {
+	if _, _, err := getXdelta3Cmd(); err != nil {
 		return false
 	}
 
@@ -623,11 +623,18 @@ func (s *Store) downloadDelta(deltaName string, downloadInfo *snap.DownloadInfo,
 	return download(context.TODO(), deltaName, deltaInfo.Sha3_384, url, user, s, w, 0, pbar, dlOpts)
 }
 
-func getXdelta3Cmd(args ...string) (*exec.Cmd, error) {
-	if osutil.ExecutableExists("xdelta3") {
-		return exec.Command("xdelta3", args...), nil
+func getXdelta3Cmd(args ...string) (*exec.Cmd, bool, error) {
+	cmd, err := snapdtool.CommandFromSystemSnap("/usr/bin/xdelta3", args...)
+	if err != nil {
+		// try checking the system provided version
+		if osutil.ExecutableExists("xdelta3") {
+			return exec.Command("xdelta3", args...), false, nil
+		}
+
+		return nil, false, fmt.Errorf("no xdelta3 available")
 	}
-	return snapdtool.CommandFromSystemSnap("/usr/bin/xdelta3", args...)
+
+	return cmd, true, nil
 }
 
 // applyDelta generates a target snap from a previously downloaded snap and a downloaded delta.
@@ -646,16 +653,38 @@ var applyDelta = func(name string, deltaPath string, deltaInfo *snap.DeltaInfo, 
 	partialTargetPath := targetPath + ".partial"
 
 	xdelta3Args := []string{"-d", "-s", snapPath, deltaPath, partialTargetPath}
-	cmd, err := getXdelta3Cmd(xdelta3Args...)
+	cmd, isSystemSnapProvided, err := getXdelta3Cmd(xdelta3Args...)
 	if err != nil {
 		return err
 	}
 
-	if err := cmd.Run(); err != nil {
-		if err := os.Remove(partialTargetPath); err != nil {
-			logger.Noticef("failed to remove partial delta target %q: %s", partialTargetPath, err)
+	// try to run the xdelta command, optionally falling back and cleaning up
+	// afterwards
+	if runErr := cmd.Run(); runErr != nil {
+		if isSystemSnapProvided {
+			// fallback to trying the version on $PATH instead
+			if !osutil.ExecutableExists("xdelta3") {
+				// internal error, we should have already checked if deltas are
+				// available before calling this function
+				return fmt.Errorf("internal: no xdelta3 available")
+			}
+			pathCmd := exec.Command("xdelta3", xdelta3Args...)
+			if runErr := pathCmd.Run(); runErr != nil {
+				if err := os.Remove(partialTargetPath); err != nil {
+					logger.Noticef("after encountering error applying delta: %v, also failed to remove partial delta target %q: %s", runErr, partialTargetPath, err)
+				}
+			}
+			// otherwise we succeeded with the $PATH version, but still failed
+			// with the system provided one, so log that error in case we end up
+			// having issues there
+			logger.Noticef("overcame error from %q from system snap (%v) by using $PATH version (%q)", cmd.Path, runErr, pathCmd.Path)
+		} else {
+			// we already used the $PATH, so no fallback
+			if err := os.Remove(partialTargetPath); err != nil {
+				logger.Noticef("after encountering error applying delta: %v, also failed to remove partial delta target %q: %s", runErr, partialTargetPath, err)
+			}
+			return err
 		}
-		return err
 	}
 
 	if err := os.Chmod(partialTargetPath, 0600); err != nil {
