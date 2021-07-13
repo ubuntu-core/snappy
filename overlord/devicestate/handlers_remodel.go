@@ -20,11 +20,14 @@ package devicestate
 
 import (
 	"fmt"
+	"time"
 
 	"gopkg.in/tomb.v2"
 
 	"github.com/snapcore/snapd/asserts"
+	"github.com/snapcore/snapd/boot"
 	"github.com/snapcore/snapd/gadget"
+	"github.com/snapcore/snapd/logger"
 	"github.com/snapcore/snapd/overlord/assertstate"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/state"
@@ -115,13 +118,57 @@ func (m *DeviceManager) doSetModel(t *state.Task, _ *tomb.Tomb) (err error) {
 		return err
 	}
 
+	var recoverySetup *recoverySystemSetup
 	if new.Grade() != asserts.ModelGradeUnset {
-		// TODO: update ubuntu-boot/device/model
-		// TODO: reseal for both the old and current model
+		var triedSystems []string
+		if err := st.Get("tried-systems", &triedSystems); err != nil {
+			return fmt.Errorf("cannot obtain tried recovery systems: %v", err)
+		}
+		recoverySetup, err = taskRecoverySystemSetup(t)
+		if err != nil {
+			return err
+		}
+		// should promoting or any of the later steps fails, the cleanup
+		// will be done in finalize-recovery-system undo
+		if err := boot.PromoteTriedRecoverySystem(remodCtx, recoverySetup.Label, triedSystems); err != nil {
+			return err
+		}
 	}
 
 	// and finish (this will set the new model)
-	return remodCtx.Finish()
+	if err := remodCtx.Finish(); err != nil {
+		return err
+	}
+
+	// XXX: beyond this point, we cannot do anything about errors such that
+	// the system will be returned to a sane state, at best try to log some
+	// errors
+
+	logEverywhere := func(format string, args ...interface{}) {
+		t.Logf(format, args)
+		logger.Noticef(format, args)
+	}
+	if new.Grade() != asserts.ModelGradeUnset {
+		if err := boot.DeviceChange(remodCtx.GroundContext(), remodCtx); err != nil {
+			logEverywhere("cannot change device: %v", err)
+		}
+
+		// TODO: defer restore device?
+		if err := m.recordSeededSystem(st, &seededSystem{
+			System:    recoverySetup.Label,
+			Model:     new.Model(),
+			BrandID:   new.BrandID(),
+			Revision:  new.Revision(),
+			Timestamp: new.Timestamp(),
+			SeedTime:  time.Now(),
+		}); err != nil {
+			logEverywhere("cannot record a new seeded system: %v", err)
+		}
+	}
+
+	t.SetStatus(state.DoneStatus)
+
+	return nil
 }
 
 func (m *DeviceManager) cleanupRemodel(t *state.Task, _ *tomb.Tomb) error {
