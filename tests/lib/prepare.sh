@@ -82,10 +82,15 @@ disable_refreshes() {
 
 setup_systemd_snapd_overrides() {
     mkdir -p /etc/systemd/system/snapd.service.d
+    # Use MemoryMax to set the memory limit for snapd.service, that is the main
+    # snapd snapd process and its subprocesses executing within the same cgroup.
+    # If snapd hits the memory limit, it will get killed by oom-killer which
+    # will be caught in restore_project_each in prepare-restore.sh.
     cat <<EOF > /etc/systemd/system/snapd.service.d/local.conf
 [Service]
 Environment=SNAPD_DEBUG_HTTP=7 SNAPD_DEBUG=1 SNAPPY_TESTING=1 SNAPD_REBOOT_DELAY=10m SNAPD_CONFIGURE_HOOK_TIMEOUT=30s SNAPPY_USE_STAGING_STORE=$SNAPPY_USE_STAGING_STORE
 ExecStartPre=/bin/touch /dev/iio:device0
+MemoryMax=100M
 EOF
 
     # We change the service configuration so reload and restart
