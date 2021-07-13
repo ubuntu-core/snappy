@@ -595,7 +595,7 @@ var (
 		"browser-support":         {"core"},
 		"content":                 {"app", "gadget"},
 		"core-support":            {"core"},
-		"cups":                    {"app"},
+		"cups":                    {"app", "core"},
 		"cups-control":            {"app", "core"},
 		"dbus":                    {"app"},
 		"docker-support":          {"core"},
@@ -761,7 +761,6 @@ func (s *baseDeclSuite) TestConnection(c *C) {
 	// case-by-case basis
 	noconnect := map[string]bool{
 		"content":          true,
-		"cups":             true,
 		"docker":           true,
 		"fwupd":            true,
 		"location-control": true,
