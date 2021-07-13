@@ -532,6 +532,7 @@ pkg_dependencies_ubuntu_classic(){
         dbus-x11
         fontconfig
         gnome-keyring
+        inotify-tools
         jq
         man
         nfs-kernel-server
@@ -665,6 +666,7 @@ pkg_dependencies_fedora(){
         fwupd
         git
         golang
+        inotify-tools
         jq
         iptables-services
         man
@@ -696,6 +698,7 @@ pkg_dependencies_amazon(){
         git
         golang
         grub2-tools
+        inotify-tools
         jq
         iptables-services
         man
@@ -727,6 +730,7 @@ pkg_dependencies_opensuse(){
         fwupd
         git
         golang-packaging
+        inotify-tools
         iptables
         jq
         lsb-release
@@ -761,6 +765,7 @@ pkg_dependencies_arch(){
     git
     go
     go-tools
+    inotify-tools
     jq
     libseccomp
     libcap
